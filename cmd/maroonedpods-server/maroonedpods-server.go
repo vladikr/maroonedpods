@@ -45,7 +45,7 @@ func main() {
 	secretCertManager.Start()
 	defer secretCertManager.Stop()
 
-	maroonedpodsServer, err := maroonedpods_server.MaroonedPodsServer(maroonedpodsNS,
+	maroonedpodsServer, err := maroonedpods_server.NewMaroonedPodsServer(maroonedpodsNS,
 		util.DefaultHost,
 		util.DefaultPort,
 		secretCertManager,
