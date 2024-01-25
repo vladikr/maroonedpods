@@ -23,7 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	maroonedPods "maroonedpods.io/maroonedpods/staging/src/maroonpods.io/maroonedpods-api/pkg/apis/core"
+	maroonedPods "maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core"
 )
 
 var (
