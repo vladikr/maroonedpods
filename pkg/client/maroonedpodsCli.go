@@ -19,8 +19,8 @@ import (
 	v1 "kubevirt.io/api/core/v1"
 	generatedclient "maroonedpods.io/maroonedpods/pkg/generated/maroonedpods/clientset/versioned"
 	kubevirtclient "maroonedpods.io/maroonedpods/pkg/generated/kubevirt/clientset/versioned"
-	v1alpha13 "maroonepods.io/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
-	mp "maroonepods.io/staging/src/maroonedpods.io/api/pkg/apis/core"
+	v1alpha13 "maroonepods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
+	mp "maroonepods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core"
 )
 
 var (

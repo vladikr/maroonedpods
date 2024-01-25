@@ -85,8 +85,6 @@ type MaroonedPodsSpec struct {
 	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
 }
 
-const (
-
 // MaroonedPodsPriorityClass defines the priority class of the MaroonedPods control plane.
 type MaroonedPodsPriorityClass string
 
