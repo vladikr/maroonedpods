@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"strings"
 
-	mpv1alpha1 "maroonedpods.io/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
+	mpv1alpha1 "maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 )
 
 var (

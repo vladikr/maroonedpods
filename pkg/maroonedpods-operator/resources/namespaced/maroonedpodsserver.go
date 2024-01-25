@@ -4,7 +4,7 @@ import (
 	"fmt"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utils2 "maroonedpods.io/pkg/util"
+	utils2 "maroonedpods.io/maroonedpods/pkg/util"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"

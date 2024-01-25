@@ -14,9 +14,9 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	generatedclient "maroonedpods.io/pkg/generated/maroonedpods/clientset/versioned"
-	mpv1alpha1 "maroonedpods.io/pkg/generated/maroonedpods/clientset/versioned/typed/core/v1alpha1"
-	kubevirtclient "maroonedpods.io/pkg/generated/kubevirt/clientset/versioned"
+	generatedclient "maroonedpods.io/maroonedpods/pkg/generated/maroonedpods/clientset/versioned"
+	mpv1alpha1 "maroonedpods.io/maroonedpods/pkg/generated/maroonedpods/clientset/versioned/typed/core/v1alpha1"
+	kubevirtclient "maroonedpods.io/maroonedpods/pkg/generated/kubevirt/clientset/versioned"
 	"maroonepods.io/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 )
 

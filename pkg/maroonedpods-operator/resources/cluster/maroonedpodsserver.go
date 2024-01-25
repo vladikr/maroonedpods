@@ -7,8 +7,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	mpserver "maroonedpods.io/pkg/maroonedpods-server"
-	"maroonedpods.io/pkg/util"
+	mpserver "maroonedpods.io/maroonedpods/pkg/maroonedpods-server"
+	"maroonedpods.io/maroonedpods/pkg/util"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 

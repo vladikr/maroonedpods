@@ -7,7 +7,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/certificate"
 	"k8s.io/klog/v2"
-	"maroonedpods.io/pkg/util"
+	"maroonedpods.io/maroonedpods/pkg/util"
 	"net/http"
 )
 

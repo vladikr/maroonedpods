@@ -5,8 +5,8 @@ import (
 
 	"k8s.io/client-go/util/certificate"
 
-	"kubevirt.io/applications-aware-quota/pkg/certificates/triple"
-	"kubevirt.io/applications-aware-quota/pkg/certificates/triple/cert"
+	"maroonedpods.io/maroonedpods/pkg/certificates/triple"
+	"maroonedpods.io/maroonedpods/pkg/certificates/triple/cert"
 )
 
 func GenerateSelfSignedCert(certsDirectory string, name string, namespace string) (certificate.FileStore, error) {

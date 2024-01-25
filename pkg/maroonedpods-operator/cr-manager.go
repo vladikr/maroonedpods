@@ -2,10 +2,10 @@ package maroonedpods_operator
 
 import (
 	"context"
-	"kubevirt.io/applications-aware-quota/pkg/util"
+	"maroonedpods.io/maroonedpods/pkg/util"
 
-	mpcluster "maroonedpods.io/pkg/maroonedpods-operator/resources/cluster"
-	mpnamespaced "maroonedpods.io/pkg/maroonedpods-operator/resources/namespaced"
+	mpcluster "maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources/cluster"
+	mpnamespaced "maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources/namespaced"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -15,7 +15,7 @@ import (
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
-	mpv1 "maroonedpods.io/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
+	mpv1 "maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 	sdkapi "kubevirt.io/controller-lifecycle-operator-sdk/api"
 	"kubevirt.io/controller-lifecycle-operator-sdk/pkg/sdk"
 )

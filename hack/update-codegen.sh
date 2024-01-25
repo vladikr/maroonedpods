@@ -34,14 +34,14 @@ rm -rf "${SCRIPT_ROOT}/pkg/generated"
 #                  k8s.io/kubernetes. The output-base is needed for the generators to output into the vendor dir
 #                  instead of the $GOPATH directly. For normal projects this can be dropped.
 /bin/bash ${CODEGEN_PKG}/generate-groups.sh  "deepcopy,client,informer,lister" \
-  maroonedpods.io/pkg/generated/maroonedpods \
-  maroonedpods.io/staging/src/maroonedpods.io/api/pkg/apis  \
+  maroonedpods.io/maroonedpods/pkg/generated/maroonedpods \
+  maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis  \
     "core:v1alpha1 " \
     --go-header-file ${SCRIPT_ROOT}/hack/custom-boilerplate.go.txt
 
 
 /bin/bash ${CODEGEN_PKG}/generate-groups.sh  "client" \
-  maroonedpods.io/pkg/generated/kubevirt \
+  maroonedpods.io/maroonedpods/pkg/generated/kubevirt \
   kubevirt.io/api  \
     "core:v1 " \
     --go-header-file ${SCRIPT_ROOT}/hack/custom-boilerplate.go.txt

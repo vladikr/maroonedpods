@@ -10,9 +10,9 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/tools/cache"
 	k6tv1 "kubevirt.io/api/core/v1"
-	"maroonedpods.io/pkg/client"
-	"maroonedpods.io/pkg/util"
-	v1alpha13 "maroonedpods.io/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
+	"maroonedpods.io/maroonedpods/pkg/client"
+	"maroonedpods.io/maroonedpods/pkg/util"
+	v1alpha13 "maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 	"time"
 )
 

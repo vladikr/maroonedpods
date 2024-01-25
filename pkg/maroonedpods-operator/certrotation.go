@@ -16,7 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	listerscorev1 "k8s.io/client-go/listers/core/v1"
 	toolscache "k8s.io/client-go/tools/cache"
-	mpcerts "maroonedpods.io/pkg/maroonedpods-operator/resources/cert"
+	mpcerts "maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources/cert"
 
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"time"

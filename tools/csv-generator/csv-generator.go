@@ -16,8 +16,8 @@ import (
 	"flag"
 	"os"
 
-	mpoperator "maroonedpods.io/pkg/maroonedpods-operator/resources/operator"
-	"maroonedpods.io/tools/util"
+	mpoperator "maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources/operator"
+	"maroonedpods.io/maroonedpods/tools/util"
 )
 
 var (

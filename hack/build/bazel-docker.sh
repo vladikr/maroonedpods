@@ -91,7 +91,7 @@ _rsync \
     --delete \
     --exclude 'bazel-bin' \
     --exclude 'bazel-genfiles' \
-    --exclude 'bazel-applications-aware-quota' \
+    --exclude 'bazel-maroonedpods' \
     --exclude 'bazel-out' \
     --exclude 'bazel-testlogs' \
     --exclude 'cluster-up/cluster/**/.kubectl' \
@@ -122,7 +122,7 @@ if [ -n "$DOCKER_CA_CERT_FILE" ]; then
 fi
 
 if [ -z "$(${MAROONEDPODS_CRI} ps --format '{{.Names}}' | grep ${BAZEL_BUILDER_SERVER})" ]; then
-   ${MAROONEDPODS_CRI} run --ulimit nofile=10000:10000 $DISABLE_SECCOMP --network host -d ${volumes} --security-opt label=disable --rm --name ${BAZEL_BUILDER_SERVER} -e "GOPATH=/root/go" -w "/root/go/src/kubevirt.io/applications-aware-quota"  ${BUILDER_IMAGE} hack/build/bazel-server.sh
+   ${MAROONEDPODS_CRI} run --ulimit nofile=10000:10000 $DISABLE_SECCOMP --network host -d ${volumes} --security-opt label=disable --rm --name ${BAZEL_BUILDER_SERVER} -e "GOPATH=/root/go" -w "/root/go/src/maroonedpods.io/maroonedpods"  ${BUILDER_IMAGE} hack/build/bazel-server.sh
 fi
 
 echo "Starting bazel server"
@@ -130,11 +130,11 @@ echo "Starting bazel server"
 test -t 1 && USE_TTY="-it"
 ${MAROONEDPODS_CRI} exec ${USE_TTY} ${BAZEL_BUILDER_SERVER} /entrypoint-bazel.sh "$@"
 
-# Copy the whole applications-aware-quota data out to get generated sources and formatting changes
+# Copy the whole maroonedpods data out to get generated sources and formatting changes
 _rsync \
     --exclude 'bazel-bin' \
     --exclude 'bazel-genfiles' \
-    --exclude 'bazel-applications-aware-quota' \
+    --exclude 'bazel-maroonedpods' \
     --exclude 'bazel-out' \
     --exclude 'bazel-testlogs' \
     --exclude 'cluster-up/cluster/**/.kubectl' \

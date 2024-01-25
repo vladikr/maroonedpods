@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	certutil "kubevirt.io/applications-aware-quota/pkg/certificates/triple/cert"
+	certutil "maroonedpods.io/maroonedpods/pkg/certificates/triple/cert"
 )
 
 type KeyPair struct {

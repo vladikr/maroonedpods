@@ -3,7 +3,7 @@ package maroonedpods_operator
 import (
 	"context"
 	"encoding/json"
-	"maroonedpods.io/pkg/util"
+	"maroonedpods.io/maroonedpods/pkg/util"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
-	"maroonedpods.io/pkg/maroonedpods-operator/resources/cert"
+	"maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources/cert"
 )
 
 func newCertManagerForTest(client kubernetes.Interface, namespace string) CertManager {

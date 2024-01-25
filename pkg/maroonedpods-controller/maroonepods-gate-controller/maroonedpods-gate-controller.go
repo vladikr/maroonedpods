@@ -16,9 +16,9 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 	_ "kubevirt.io/api/core/v1"
-	"maroonedpods.io/pkg/client"
-	"maroonedpods.io/pkg/log"
-	"maroonedpods.io/pkg/util"
+	"maroonedpods.io/maroonedpods/pkg/client"
+	"maroonedpods.io/maroonedpods/pkg/log"
+	"maroonedpods.io/maroonedpods/pkg/util"
 	"time"
 )
 

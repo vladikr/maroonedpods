@@ -7,7 +7,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
-	handlerv1 "maroonedpods.io/pkg/maroonedpods-server/handler"
+	handlerv1 "maroonedpods.io/maroonedpods/pkg/maroonedpods-server/handler"
 	"net/http"
 )
 

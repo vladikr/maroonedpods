@@ -3,7 +3,7 @@ package maroonpods_operator
 import (
 	"context"
 	"fmt"
-	"maroonedpods.io/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
+	"maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"

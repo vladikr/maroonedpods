@@ -5,8 +5,8 @@ import (
 	"github.com/coreos/go-semver/semver"
 	csvv1 "github.com/operator-framework/operator-lifecycle-manager/pkg/api/apis/operators/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"maroonedpods.io/pkg/maroonedpods-operator/resources"
-	utils2 "maroonedpods.io/pkg/util"
+	"maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources"
+	utils2 "maroonedpods.io/maroonedpods/pkg/util"
 	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -17,7 +17,7 @@ import (
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
-	"maroonedpods.io/pkg/maroonedpods-operator/resources/cluster"
+	"maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources/cluster"
 )
 
 const (

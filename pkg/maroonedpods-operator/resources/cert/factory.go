@@ -3,8 +3,8 @@ package cert
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"maroonedpods.io/pkg/maroonedpods-operator/resources/cluster"
-	"maroonedpods.io/pkg/util"
+	"maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources/cluster"
+	"maroonedpods.io/maroonedpods/pkg/util"
 	"time"
 )
 

@@ -10,8 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
-	"maroonedpods.io/pkg/util"
-	"maroonedpods.io/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
+	"maroonedpods.io/maroonedpods/pkg/util"
+	"maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 	"net/http"
 	"strings"
 )
