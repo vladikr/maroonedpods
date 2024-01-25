@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    maroonedpos.io: ""
+  name: {{.Namespace}}
+{{index .GeneratedManifests "operator-everything.yaml.in"}}

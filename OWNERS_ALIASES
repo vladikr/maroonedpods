@@ -1,0 +1,9 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
+aliases:
+  approvers:
+      - vladikr
+      - Barakmor1
+  code-reviewers:
+      - vladikr
+      - Barakmor1
