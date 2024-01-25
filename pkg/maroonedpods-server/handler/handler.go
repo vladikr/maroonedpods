@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -11,7 +9,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"maroonedpods.io/maroonedpods/pkg/util"
-	"maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 	"net/http"
 	"strings"
 )

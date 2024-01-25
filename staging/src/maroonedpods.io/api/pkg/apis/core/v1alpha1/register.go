@@ -29,7 +29,7 @@ import (
 var (
 	// SchemeGroupVersion is group version used to register these objects
 	SchemeGroupVersion                        = schema.GroupVersion{Group: maroonedPods.GroupName, Version: maroonedPods.LatestVersion}
-	MaproonedPodsGroupVersionKind = schema.GroupVersionKind{Group: maroonPods.GroupName, Version: maroonedPods.LatestVersion, Kind: "MaroonedPods"}
+	MaproonedPodsGroupVersionKind = schema.GroupVersionKind{Group: maroonedPods.GroupName, Version: maroonedPods.LatestVersion, Kind: "MaroonedPods"}
 )
 
 // Kind takes an unqualified kind and returns back a Group qualified GroupKind

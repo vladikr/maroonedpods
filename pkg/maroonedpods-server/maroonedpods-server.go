@@ -30,8 +30,8 @@ type MaroonedPodsServer struct {
 	maroonedpodsNS             string
 }
 
-// MaroonedPodsServer returns an initialized uploadProxyApp
-func MaroonedPodsServer(maroonedpodsNS string,
+// NewMaroonedPodsServer returns an initialized uploadProxyApp
+func NewMaroonedPodsServer(maroonedpodsNS string,
 	bindAddress string,
 	bindPort uint,
 	secretCertManager certificate.Manager,

@@ -66,7 +66,6 @@ func createResourceGroup(funcMap factoryFuncMap, group string, args *FactoryArgs
 
 func createCRDResources(args *FactoryArgs) []client.Object {
 	return []client.Object{
-		createMaroonedPodsCRD(),
 	}
 }
 
