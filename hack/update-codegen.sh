@@ -51,8 +51,9 @@ echo "************* running controller-gen to generate schema yaml *************
     mkdir -p "${SCRIPT_ROOT}/_out/manifests/schema"
     find "${SCRIPT_ROOT}/_out/manifests/schema/" -type f -exec rm {} -f \;
     cd ./staging/src/maroonedpods.io/api
+    echo pwd
     controller-gen crd:crdVersions=v1 output:dir=${SCRIPT_ROOT}/_out/manifests/schema paths=./pkg/apis/core/...
 )
 
-(cd "${SCRIPT_ROOT}/tools/crd-generator/" && go build -o "${SCRIPT_ROOT}/bin/crd-generator" ./...)
+(cd "${SCRIPT_ROOT}/tools/crd-generator/" && go build -o "${SCRIPT_ROOT}/bin/crd-generator" -buildvcs=false ./...)
 ${SCRIPT_ROOT}/bin/crd-generator --crdDir=${SCRIPT_ROOT}/_out/manifests/schema/ --outputDir=${SCRIPT_ROOT}/pkg/maroonedpods-operator/resources/
