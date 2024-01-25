@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	mpcerts "maroonedpods.io/maroonedpods/pkg/maroonedpods-operator/resources/cert"
-	"maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/maroonedpods-api/pkg/apis/core/v1alpha1"
+	"maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
