@@ -23,7 +23,7 @@ MAROONEDPODS_NAMESPACE=${MAROONEDPODS_NAMESPACE:-maroonedpods}
 CR_NAME=${CR_NAME:-maroonedpods}
 
 # update this whenever new builder tag is created
-BUILDER_IMAGE=${BUILDER_IMAGE:-quay.io/vladikr/maroonedpods-bazel-builder:2401242130-cba9fe1}
+BUILDER_IMAGE=${BUILDER_IMAGE:-quay.io/vladikr/maroonedpods-bazel-builder:2401250613-e6da931}
 
 function parseTestOpts() {
     pkgs=""
