@@ -32,7 +32,6 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/clock"
 	maroonedpods_controller2 "maroonedpods.io/maroonedpods/pkg/maroonedpods-controller/maroonedpods-gate-controller"
 	"maroonedpods.io/maroonedpods/pkg/maroonedpods-controller/leaderelectionconfig"
 	"maroonedpods.io/maroonedpods/pkg/certificates/bootstrap"
@@ -52,7 +51,6 @@ type MaroonedPodsControllerApp struct {
 	LeaderElection               leaderelectionconfig.Configuration
 	maroonedpodsCli                       client.MaroonedPodsClient
 	maroonedPodsGateController            *maroonedpods_controller2.MaroonedPodsGateController
-	configController             *configuration_controller.MaroonedPodsConfigurationController
 	podInformer                  cache.SharedIndexInformer
 	maroonedpodsInformer                  cache.SharedIndexInformer
 	readyChan                    chan bool
@@ -123,7 +121,7 @@ func (mca *MaroonedPodsControllerApp) leaderProbe(_ *restful.Request, response *
 
 
 func (mca *MaroonedPodsControllerApp) initMaroonedPodsGateController(stop <-chan struct{}) {
-	mca.maroonedpodsGateController = maroonedpods_controller2.NewMaroonedPodsGateController(mca.maroonedpodsCli,
+	mca.maroonedPodsGateController = maroonedpods_controller2.NewMaroonedPodsGateController(mca.maroonedpodsCli,
 		mca.podInformer,
 		stop,
 		mca.enqueueAllGateControllerChan,
@@ -218,7 +216,7 @@ func (mca *MaroonedPodsControllerApp) onStartedLeading() func(ctx context.Contex
 		}
 
 		go func() {
-			mca.maroonedpodsGateController.Run(context.Background(), 3)
+			mca.maroonedPodsGateController.Run(context.Background(), 3)
 		}()
 		close(mca.readyChan)
 	}

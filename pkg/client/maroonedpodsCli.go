@@ -64,7 +64,7 @@ type RestConfigHookFunc func(*rest.Config)
 var restConfigHooks []RestConfigHookFunc
 var restConfigHooksLock sync.Mutex
 
-var mpclient MaroondPodsClient
+var mpclient MaroonedPodsClient
 var once sync.Once
 
 // Init adds the default `kubeconfig` and `master` flags. It is not added by default to allow integration into

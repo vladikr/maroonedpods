@@ -1,4 +1,4 @@
-package maroonpods_operator
+package maroonedpods_operator
 
 import (
 	"context"
