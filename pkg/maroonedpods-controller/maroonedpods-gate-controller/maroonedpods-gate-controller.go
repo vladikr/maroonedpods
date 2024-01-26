@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -14,7 +12,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/clock"
 	_ "kubevirt.io/api/core/v1"
 	"maroonedpods.io/maroonedpods/pkg/client"
 	"maroonedpods.io/maroonedpods/pkg/log"
@@ -53,7 +50,6 @@ func NewMaroonedPodsGateController(maroonedpodsCli client.MaroonedPodsClient,
         queue:                     workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "maroonedpods-queue"),
 
 		recorder:                     eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: util.ControllerPodName}),
-		maroonedpodsEvaluator:                 maroonedpods_evaluator.NewMaroonedPodsEvaluator(podInformer, calcRegistry, clock.RealClock{}),
 		stop:                         stop,
 		enqueueAllGateControllerChan: enqueueAllGateControllerChan,
 	}
@@ -136,7 +132,6 @@ func (ctrl *MaroonedPodsGateController) Run(ctx context.Context, threadiness int
 				return
 			case <-ctrl.enqueueAllGateControllerChan:
 				log.Log.Infof("MaroonedPodsGateController: Signal processed enqueued All")
-				ctrl.enqueueAll()
 			}
 		}
 	}()

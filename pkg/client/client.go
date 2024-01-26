@@ -57,7 +57,7 @@ func (k maroonedpods) GeneratedMaroonedPodsClient() generatedclient.Interface {
 }
 
 func (k maroonedpods) MaroonedPods() MaroonedPodsInterface {
-	return k.generatedMaroonedPodsClient.MaroonedPodsV1alpha1().MaroonedPods()
+	return k.generatedMaroonedPodsClient.MaroonedpodsV1alpha1().MaroonedPodses()
 }
 
 func (k maroonedpods) DynamicClient() dynamic.Interface {

@@ -1,4 +1,4 @@
-package maroonpods_operator
+package maroonedpods_operator
 
 import (
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
