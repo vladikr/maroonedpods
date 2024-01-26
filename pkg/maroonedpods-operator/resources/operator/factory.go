@@ -71,7 +71,7 @@ func CreateOperatorResourceGroup(group string, args *FactoryArgs) ([]client.Obje
 }
 
 // NewMaroonedPodsCrd - provides MaroonedPods CRD
-func NewNaroonedPodsCrd() *extv1.CustomResourceDefinition {
+func NewMaroonedPodsCrd() *extv1.CustomResourceDefinition {
 	return createMaroonedPodsListCRD()
 }
 

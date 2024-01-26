@@ -70,7 +70,7 @@ function check_structural_schema {
 }
 
 function wait_maroonedpods_available {
-  echo "Waiting $MAROONEDPODS_AVAILABLE_TIMEOUT seconds for MAROONEDPODS to become available"
+  echo "Waiting $MAROONEDPODS_AVAILABLE_TIMEOUT seconds for maroonedpods.io/${CR_NAME} to become available"
   if [ "$KUBEVIRT_PROVIDER" == "os-3.11.0-crio" ]; then
     echo "Openshift 3.11 provider"
     available=$(_kubectl get maroonedpods maroonedpods -o jsonpath={.status.conditions[0].status})
@@ -83,6 +83,7 @@ function wait_maroonedpods_available {
       fix_failed_sdn_pods
     done
   else
+    
     _kubectl wait maroonedpods.io/${CR_NAME} --for=condition=Available --timeout=${MAROONEDPODS_AVAILABLE_TIMEOUT}s
   fi
 }

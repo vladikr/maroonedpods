@@ -14,7 +14,7 @@ type FactoryArgs struct {
 	OperatorVersion         string `required:"true" split_words:"true"`
 	ControllerImage         string `required:"true" split_words:"true"`
 	DeployClusterResources  string `required:"true" split_words:"true"`
-	MaroonedPodsServerImage string `required:"true" split_words:"true"`
+	MaroonedPodsServerImage string `required:"true" envconfig:"MAROONEDPODS_SERVER_IMAGE"`
 	Verbosity               string `required:"true"`
 	PullPolicy              string `required:"true" split_words:"true"`
 	ImagePullSecrets        []corev1.LocalObjectReference
