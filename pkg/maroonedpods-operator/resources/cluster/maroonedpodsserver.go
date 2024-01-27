@@ -178,7 +178,7 @@ func createGatingValidatingWebhook(namespace string, c client.Client, l logr.Log
 	if includeHooks {
 		hooks = []admissionregistrationv1.ValidatingWebhook{
 			{
-				Name:                    "maroonedpods.validator",
+				Name:                    "marooned.pods.validator",
 				AdmissionReviewVersions: []string{"v1", "v1beta1"},
 				FailurePolicy:           &failurePolicy,
 				SideEffects:             &sideEffect,
