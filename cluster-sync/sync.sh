@@ -84,7 +84,7 @@ function wait_maroonedpods_available {
     done
   else
     
-    _kubectl wait maroonedpods.io/${CR_NAME} --for=condition=Available --timeout=${MAROONEDPODS_AVAILABLE_TIMEOUT}s
+    _kubectl wait maroonedpods/${CR_NAME} -n ${MAROONEDPODS_NAMESPACE} --for=condition=Available --timeout=${MAROONEDPODS_AVAILABLE_TIMEOUT}s
   fi
 }
 
