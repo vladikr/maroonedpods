@@ -1,5 +1,5 @@
 /*
- * This file is part of the KubeVirt project
+ * This file is part of the MaroonedPods project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,12 +21,12 @@ package MaroonedPods
 
 // GroupName is the group name used in this package
 const (
-	GroupName                 = "maroonedpods.io"
-	LatestVersion             = "v1alpha1"
-	Kind                      = "MaroonedPods"
-	ListKind                  = "MaroonedPodsList"
-
+	GroupName     = "maroonedpods.io"
+	LatestVersion = "v1alpha1"
+	Kind          = "MaroonedPods"
+	ListKind      = "MaroonedPodsList"
 )
+
 var (
 	ApiSupportedWebhookVersions = []string{LatestVersion}
 )

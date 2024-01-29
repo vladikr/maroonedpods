@@ -12,7 +12,7 @@ import (
 	"k8s.io/client-go/util/certificate"
 	"k8s.io/klog/v2"
 	api "k8s.io/kubernetes/pkg/apis/core"
-	k8s_api_v1 "k8s.io/kubernetes/pkg/apis/core/v1"
+	k8sapiv1 "k8s.io/kubernetes/pkg/apis/core/v1"
 	"k8s.io/utils/pointer"
 	v1 "kubevirt.io/api/core/v1"
 	sdkapi "kubevirt.io/controller-lifecycle-operator-sdk/api"
@@ -35,7 +35,7 @@ const (
 	// Default port that api listens on.
 	DefaultPort = 8443
 	// Default address api listens on.
-	DefaultHost  = "0.0.0.0"
+	DefaultHost           = "0.0.0.0"
 	DefaultMaroonedPodsNs = "maroonedpods"
 )
 
@@ -70,17 +70,17 @@ const (
 	// TlsLabel provides a constant to capture our env variable "TLS"
 	TlsLabel = "TLS"
 	// ConfigMapName is the name of the maroonedpods configmap that own maroonedpods resources
-	ConfigMapName                                            = "maroonedpods-config"
-	OperatorServiceAccountName                               = "maroonedpods-operator"
-	MaroonedPodsGate                                         = "MaroonedPodsGate"
-	ControllerResourceName                                   = ControllerPodName
-	SecretResourceName                                       = "maroonedpods-server-cert"
-	MaroonedPodsServerResourceName                           = "maroonedpods-server"
-	ControllerClusterRoleName                                = ControllerPodName
+	ConfigMapName                  = "maroonedpods-config"
+	OperatorServiceAccountName     = "maroonedpods-operator"
+	MaroonedPodsGate               = "MaroonedPodsGate"
+	ControllerResourceName         = ControllerPodName
+	SecretResourceName             = "maroonedpods-server-cert"
+	MaroonedPodsServerResourceName = "maroonedpods-server"
+	ControllerClusterRoleName      = ControllerPodName
 )
 
 var commonLabels = map[string]string{
-	MaroonedPodsLabel:                    "",
+	MaroonedPodsLabel:           "",
 	AppKubernetesManagedByLabel: "maroonedpods-operator",
 	AppKubernetesComponentLabel: "multi-tenant",
 }
@@ -324,7 +324,7 @@ func ToExternalPodOrError(obj k8sruntime.Object) (*corev1.Pod, error) {
 	case *corev1.Pod:
 		pod = t
 	case *api.Pod:
-		if err := k8s_api_v1.Convert_core_Pod_To_v1_Pod(t, pod, nil); err != nil {
+		if err := k8sapiv1.Convert_core_Pod_To_v1_Pod(t, pod, nil); err != nil {
 			return nil, err
 		}
 	default:

@@ -27,7 +27,7 @@ type MaroonedPodsServer struct {
 	bindPort          uint
 	secretCertManager certificate.Manager
 	handler           http.Handler
-	maroonedpodsNS             string
+	maroonedpodsNS    string
 }
 
 // NewMaroonedPodsServer returns an initialized uploadProxyApp
@@ -41,7 +41,7 @@ func NewMaroonedPodsServer(maroonedpodsNS string,
 		secretCertManager: secretCertManager,
 		bindAddress:       bindAddress,
 		bindPort:          bindPort,
-		maroonedpodsNS:             maroonedpodsNS,
+		maroonedpodsNS:    maroonedpodsNS,
 	}
 	app.initHandler(maroonedpodsCli)
 
