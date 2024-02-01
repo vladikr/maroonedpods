@@ -25,6 +25,15 @@ func GetPodInformer(maroonedpodsCli client.MaroonedPodsClient) cache.SharedIndex
 	return cache.NewSharedIndexInformer(listWatcher, &v1.Pod{}, 1*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 }
 
+func GetPodsToMaroonInformer(maroonedpodsCli client.MaroonedPodsClient) cache.SharedIndexInformer {
+	labelSelector, err := labels.Parse("maroonedpods.io/maroon=true")
+	if err != nil {
+		panic(err)
+	}
+	listWatcher := NewListWatchFromClient(maroonedpodsCli.CoreV1().RESTClient(), "pods", metav1.NamespaceAll, fields.Everything(), labelSelector)
+	return cache.NewSharedIndexInformer(listWatcher, &v1.Pod{}, 1*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+}
+
 func GetNodesInformer(maroonedpodsCli client.MaroonedPodsClient) cache.SharedIndexInformer {
 	listWatcher := NewListWatchFromClient(maroonedpodsCli.CoreV1().RESTClient(), "nodes", metav1.NamespaceAll, fields.Everything(), labels.Everything())
 	return cache.NewSharedIndexInformer(listWatcher, &v1.Node{}, 1*time.Hour, cache.Indexers{})
@@ -39,7 +48,6 @@ func GetVMIInformer(maroonedpodsCli client.MaroonedPodsClient) cache.SharedIndex
 	listWatcher := NewListWatchFromClient(maroonedpodsCli.KubevirtClient().KubevirtV1().RESTClient(), "virtualmachineinstances", metav1.NamespaceAll, fields.Everything(), labels.Everything())
 	return cache.NewSharedIndexInformer(listWatcher, &k6tv1.VirtualMachineInstance{}, 1*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 }
-
 
 // NewListWatchFromClient creates a new ListWatch from the specified client, resource, kubevirtNamespace and field selector.
 func NewListWatchFromClient(c cache.Getter, resource string, namespace string, fieldSelector fields.Selector, labelSelector labels.Selector) *cache.ListWatch {

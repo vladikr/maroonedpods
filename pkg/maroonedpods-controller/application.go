@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * Copyright 2023,Red Hat, Inc.
+ * Copyright 2024,Red Hat, Inc.
  *
  */
 package maroonedpods_controller
@@ -32,13 +32,13 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
-	maroonedpods_controller2 "maroonedpods.io/maroonedpods/pkg/maroonedpods-controller/maroonedpods-gate-controller"
-	"maroonedpods.io/maroonedpods/pkg/maroonedpods-controller/leaderelectionconfig"
+	golog "log"
 	"maroonedpods.io/maroonedpods/pkg/certificates/bootstrap"
 	"maroonedpods.io/maroonedpods/pkg/client"
 	"maroonedpods.io/maroonedpods/pkg/informers"
+	"maroonedpods.io/maroonedpods/pkg/maroonedpods-controller/leaderelectionconfig"
+	maroonedpods_controller2 "maroonedpods.io/maroonedpods/pkg/maroonedpods-controller/maroonedpods-gate-controller"
 	"maroonedpods.io/maroonedpods/pkg/util"
-	golog "log"
 	"net/http"
 	"os"
 	"strconv"
@@ -46,13 +46,15 @@ import (
 
 type MaroonedPodsControllerApp struct {
 	ctx                          context.Context
-	maroonedpodsNs                        string
+	maroonedpodsNs               string
 	host                         string
 	LeaderElection               leaderelectionconfig.Configuration
-	maroonedpodsCli                       client.MaroonedPodsClient
-	maroonedPodsGateController            *maroonedpods_controller2.MaroonedPodsGateController
+	maroonedpodsCli              client.MaroonedPodsClient
+	maroonedPodsGateController   *maroonedpods_controller2.MaroonedPodsGateController
 	podInformer                  cache.SharedIndexInformer
-	maroonedpodsInformer                  cache.SharedIndexInformer
+	maroonedpodsInformer         cache.SharedIndexInformer
+	vmiInformer                  cache.SharedIndexInformer
+	nodeInformer                 cache.SharedIndexInformer
 	readyChan                    chan bool
 	enqueueAllGateControllerChan chan struct{}
 	leaderElector                *leaderelection.LeaderElector
@@ -87,9 +89,11 @@ func Execute() {
 	app.host = host
 
 	app.maroonedpodsCli, err = client.GetMaroonedPodsClient()
-	app.podInformer = informers.GetPodInformer(app.maroonedpodsCli)
+	//app.podInformer = informers.GetPodInformer(app.maroonedpodsCli)
+	app.podInformer = informers.GetPodsToMaroonInformer(app.maroonedpodsCli)
 	app.maroonedpodsInformer = informers.GetMaroonedPodsInformer(app.maroonedpodsCli)
-
+	app.vmiInformer = informers.GetVMIInformer(app.maroonedpodsCli)
+	app.nodeInformer = informers.GetNodesInformer(app.maroonedpodsCli)
 	stop := ctx.Done()
 
 	app.initMaroonedPodsGateController(stop)
@@ -119,16 +123,15 @@ func (mca *MaroonedPodsControllerApp) leaderProbe(_ *restful.Request, response *
 	}
 }
 
-
 func (mca *MaroonedPodsControllerApp) initMaroonedPodsGateController(stop <-chan struct{}) {
 	mca.maroonedPodsGateController = maroonedpods_controller2.NewMaroonedPodsGateController(mca.maroonedpodsCli,
 		mca.podInformer,
+		mca.vmiInformer,
+		mca.nodeInformer,
 		stop,
 		mca.enqueueAllGateControllerChan,
 	)
 }
-
-
 
 func (mca *MaroonedPodsControllerApp) Run(stop <-chan struct{}) {
 	secretInformer := informers.GetSecretInformer(mca.maroonedpodsCli, mca.maroonedpodsNs)
@@ -207,9 +210,13 @@ func (mca *MaroonedPodsControllerApp) onStartedLeading() func(ctx context.Contex
 
 		go mca.podInformer.Run(stop)
 		go mca.maroonedpodsInformer.Run(stop)
+		go mca.vmiInformer.Run(stop)
+		go mca.nodeInformer.Run(stop)
 
 		if !cache.WaitForCacheSync(stop,
 			mca.podInformer.HasSynced,
+			mca.vmiInformer.HasSynced,
+			mca.nodeInformer.HasSynced,
 			mca.maroonedpodsInformer.HasSynced,
 		) {
 			klog.Warningf("failed to wait for caches to sync")
