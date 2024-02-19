@@ -3,20 +3,25 @@
 An operator that enables container workloads to be isolated in Virtual Machines using KubeVirt.
 
 
-Here's a brief overview of how it works:
+## Here's a brief overview of how it works:
 
-* Any submitted pod tagged with a "maroonedPods" label will be admitted but will be prevented from scheduling.
+- Any submitted pod tagged with a "maroonedPods" label will be admitted but will be prevented from scheduling.
 
-* At this point, a new Virtual Machine will be created. It will run a Kubernetes Node image. 
+- At this point, a new Virtual Machine will be created. It will run a Kubernetes Node image. 
 
-* On boot, this VM  will register itself as a Node within the cluster, specifically allocated for the awaiting pod.
+- On boot, this VM  will register itself as a Node within the cluster, specifically allocated for the awaiting pod.
 
-* As soon as this Node becomes ready, the Scheduling Gate on the pod is removed, allowing it to be scheduled to this newly prepared Node.
+- As soon as this Node becomes ready, the Scheduling Gate on the pod is removed, allowing it to be scheduled to this newly prepared Node.
 
 
-MaroonedPods is taking the Kubernetes native approach to the workload isolation problem. 
-It allows workloads to run in VMs, take advantage of all native/supported Kubernetes plugins, and get access to specialized hardware, as any other application running on KubeVirt VMs. 
+<br/>
 
+MaroonedPods is taking the Kubernetes native approach to the workload isolation problem.
+<br/>
+The project lets you run Pod in virtual machines (VMs). These pods can use all the available Kubernetes plugins and access special hardware just like any other app running on KubeVirt VMs.
+
+
+<br/>
 
 
 
