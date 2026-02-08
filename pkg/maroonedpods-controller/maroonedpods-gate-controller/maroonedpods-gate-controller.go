@@ -100,18 +100,59 @@ func (ctrl *MaroonedPodsGateController) addPod(obj interface{}) {
 	}
 }
 func (ctrl *MaroonedPodsGateController) updatePod(old, curr interface{}) {
+	oldPod := old.(*v1.Pod)
 	pod := curr.(*v1.Pod)
 
-	if pod.Spec.SchedulingGates != nil &&
+	// Check if pod still has scheduling gate
+	hasGate := pod.Spec.SchedulingGates != nil &&
 		len(pod.Spec.SchedulingGates) == 1 &&
-		pod.Spec.SchedulingGates[0].Name == util.MaroonedPodsGate {
+		pod.Spec.SchedulingGates[0].Name == util.MaroonedPodsGate
+
+	if hasGate {
 		klog.Info(fmt.Sprintf("Updating pod with gate %s", pod.Name))
 		key, err := KeyFunc(pod)
 		if err != nil {
 			log.Log.Info("Failed to obtain pod key function")
 		}
 		ctrl.queue.Add(key)
+		return
 	}
+
+	// Check if resource requests changed (future: trigger VMI resize)
+	// Note: Kubernetes doesn't allow changing resource requests on running pods
+	// without in-place pod resize (alpha/beta feature). This is for future use.
+	if ctrl.podResourcesChanged(oldPod, pod) {
+		klog.V(2).Infof("Pod %s/%s resource requests changed, VMI resize not yet implemented",
+			pod.Namespace, pod.Name)
+		// TODO: Implement VMI resize when KubeVirt supports it or recreate VMI
+		// For now, just log the change
+	}
+}
+
+// podResourcesChanged checks if pod container resource requests have changed
+func (ctrl *MaroonedPodsGateController) podResourcesChanged(oldPod, newPod *v1.Pod) bool {
+	if len(oldPod.Spec.Containers) != len(newPod.Spec.Containers) {
+		return true
+	}
+
+	for i := range oldPod.Spec.Containers {
+		oldReqs := oldPod.Spec.Containers[i].Resources.Requests
+		newReqs := newPod.Spec.Containers[i].Resources.Requests
+
+		oldCPU := oldReqs[v1.ResourceCPU]
+		newCPU := newReqs[v1.ResourceCPU]
+		if !oldCPU.Equal(newCPU) {
+			return true
+		}
+
+		oldMem := oldReqs[v1.ResourceMemory]
+		newMem := newReqs[v1.ResourceMemory]
+		if !oldMem.Equal(newMem) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (ctrl *MaroonedPodsGateController) runWorker() {
@@ -340,9 +381,93 @@ func (ctrl *MaroonedPodsGateController) getVMResourcesFromConfig() (cpuCores uin
 	return
 }
 
+// calculateVMResourcesFromPod calculates VM resources based on pod requests plus overhead.
+// Returns CPU cores and memory in Mi.
+func (ctrl *MaroonedPodsGateController) calculateVMResourcesFromPod(pod *v1.Pod) (cpuCores uint32, memoryMi uint64) {
+	config := ctrl.getConfig()
+
+	// Get base VM resources as minimum floor
+	baseVMCPU := uint32(2)
+	baseVMMemory := uint64(3072) // 3Gi in Mi
+	if config != nil {
+		if config.Spec.BaseVMResources.CPU > 0 {
+			baseVMCPU = config.Spec.BaseVMResources.CPU
+		}
+		if config.Spec.BaseVMResources.MemoryMi > 0 {
+			baseVMMemory = config.Spec.BaseVMResources.MemoryMi
+		}
+	}
+
+	// Default overhead: 500m CPU, 512Mi memory
+	overheadCPUMillis := int64(500)
+	overheadMemoryBytes := int64(512 * 1024 * 1024) // 512Mi
+
+	// Apply configured overhead if present
+	if config != nil && config.Spec.ResourceOverhead != nil {
+		if cpu, ok := (*config.Spec.ResourceOverhead)[v1.ResourceCPU]; ok {
+			overheadCPUMillis = cpu.MilliValue()
+		}
+		if mem, ok := (*config.Spec.ResourceOverhead)[v1.ResourceMemory]; ok {
+			overheadMemoryBytes = mem.Value()
+		}
+	}
+
+	// Sum up all container requests
+	totalPodCPUMillis := int64(0)
+	totalPodMemoryBytes := int64(0)
+
+	for _, container := range pod.Spec.Containers {
+		if cpu, ok := container.Resources.Requests[v1.ResourceCPU]; ok {
+			totalPodCPUMillis += cpu.MilliValue()
+		}
+		if mem, ok := container.Resources.Requests[v1.ResourceMemory]; ok {
+			totalPodMemoryBytes += mem.Value()
+		}
+	}
+
+	// Add overhead to pod requests
+	totalCPUMillis := totalPodCPUMillis + overheadCPUMillis
+	totalMemoryBytes := totalPodMemoryBytes + overheadMemoryBytes
+
+	// Convert to VM units (cores and Mi)
+	// Round up CPU to nearest core
+	calculatedCPU := uint32((totalCPUMillis + 999) / 1000) // ceiling division
+	if calculatedCPU == 0 {
+		calculatedCPU = 1 // minimum 1 core
+	}
+
+	// Convert bytes to Mi
+	calculatedMemoryMi := uint64(totalMemoryBytes / (1024 * 1024))
+	if calculatedMemoryMi == 0 {
+		calculatedMemoryMi = 512 // minimum 512Mi
+	}
+
+	// Use maximum of calculated and base (floor)
+	cpuCores = calculatedCPU
+	if baseVMCPU > cpuCores {
+		cpuCores = baseVMCPU
+	}
+
+	memoryMi = calculatedMemoryMi
+	if baseVMMemory > memoryMi {
+		memoryMi = baseVMMemory
+	}
+
+	klog.V(3).Infof("Pod %s/%s resource calculation: pod_cpu=%dm pod_mem=%dMi overhead_cpu=%dm overhead_mem=%dMi -> VM: cpu=%d mem=%dMi",
+		pod.Namespace, pod.Name,
+		totalPodCPUMillis, totalPodMemoryBytes/(1024*1024),
+		overheadCPUMillis, overheadMemoryBytes/(1024*1024),
+		cpuCores, memoryMi)
+
+	return
+}
+
 func (ctrl *MaroonedPodsGateController) createVMIFromPod(pod *v1.Pod) *virtv1.VirtualMachineInstance {
-	// Get VM resources from config (with defaults)
-	cpuCores, memoryMi, nodeImage, taintKey := ctrl.getVMResourcesFromConfig()
+	// Calculate VM resources based on pod requests + overhead
+	cpuCores, memoryMi := ctrl.calculateVMResourcesFromPod(pod)
+
+	// Get node image and taint key from config
+	_, _, nodeImage, taintKey := ctrl.getVMResourcesFromConfig()
 
 	/*	userData := fmt.Sprintf(`#!/bin/sh
 
