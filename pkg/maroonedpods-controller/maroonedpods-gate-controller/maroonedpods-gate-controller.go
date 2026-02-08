@@ -293,59 +293,50 @@ func (ctrl *MaroonedPodsGateController) Run(ctx context.Context, threadiness int
 }
 
 func (ctrl *MaroonedPodsGateController) createVMIFromPod(pod *v1.Pod) *virtv1.VirtualMachineInstance {
+	// Get configuration (defaults if config doesn't exist yet)
+	nodeImage := "quay.io/vladikr/marooned-node:latest"
+	taintKey := "maroonedpods.io"
+	// TODO: When MaroonedPodsConfig CRD is available:
+	// config := ctrl.getConfig()
+	// if config != nil && config.Spec.NodeImage != "" {
+	//     nodeImage = config.Spec.NodeImage
+	// }
+	// if config != nil && config.Spec.NodeTaintKey != "" {
+	//     taintKey = config.Spec.NodeTaintKey
+	// }
 
-	/*	userData := fmt.Sprintf(`#!/bin/sh
+	// Get Kubernetes API server endpoint
+	// TODO: Make this configurable via config or environment
+	serverURL := "https://kubernetes.default.svc:6443"
+	// TODO: Get actual token from kubeadm or secret
+	// For now using placeholder - in production this should come from kubeadm bootstrap token or service account
+	token := "abcdef.1234567890123456"
 
-		cat <<EOF >/tmp/kubeadm-join-config.conf
-		apiVersion: kubeadm.k8s.io/v1beta3
-		kind: JoinConfiguration
-		nodeRegistration:
-		  taints:
-		    - key: "%s.maroonedpods.io"
-		      value: "created"
-		      effect: "NoSchedule"
-		discovery:
-		  bootstrapToken:
-		    unsafeSkipCAVerification: true
-		    apiServerEndpoint: "192.168.66.101:6443"
-		    token: "abcdef.1234567890123456"
-		EOF
+	// Generate pod UID for unique node identification
+	podUID := string(pod.UID)
 
-		kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=all --v=5
-
-		users:
-		  - name: marn
-		    gecos: Marooned User
-		    sudo: ALL=(ALL) NOPASSWD:ALL
-		    plain_text_passwd: 'marn'
-		    lock_passwd: False
-		    groups: users, admin
-
-		`, pod.Name)*/
+	// Generate cloud-init userdata that writes k3s join configuration
 	userData := fmt.Sprintf(`#!/bin/sh
+# MaroonedPods k3s node initialization script
 
-cat <<EOF >/tmp/kubeadm-join-config.conf
-apiVersion: kubeadm.k8s.io/v1beta3
-kind: JoinConfiguration
-nodeRegistration:
-  taints:
-    - key: "%s.maroonedpods.io"
-      value: "created"
-      effect: "NoSchedule"
-discovery:
-  bootstrapToken:
-    unsafeSkipCAVerification: true
-    apiServerEndpoint: "192.168.66.101:6443"
-    token: "abcdef.1234567890123456"
-EOF
+# Create marooned config directory
+mkdir -p /etc/marooned
 
-kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=all --v=5
-useradd -s /bin/bash -d /home/vladik/ -m -G sudo vladik
-passwd vladik
-`, pod.Name)
+# Write k3s join configuration
+cat > /etc/marooned/join-info.yaml <<'JOINEOF'
+server_url: %s
+token: %s
+pod_uid: %s
+taint_key: %s
+JOINEOF
+
+# Ensure marooned-node-boot service will run
+systemctl enable marooned-node-boot.service
+
+echo "MaroonedPods cloud-init complete"
+`, serverURL, token, podUID, taintKey)
 
 	encodedData := base64.StdEncoding.EncodeToString([]byte(userData))
-	nodeVmImageTemplate := "quay.io/capk/ubuntu-2004-container-disk:v1.26.0"
 	vmi := virtv1.NewVMIReferenceFromNameWithNS(pod.Namespace, pod.Name)
 	vmi.Spec = virtv1.VirtualMachineInstanceSpec{Domain: virtv1.DomainSpec{}}
 	vmi.TypeMeta = k8smetav1.TypeMeta{
@@ -364,29 +355,65 @@ passwd vladik
 	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeBinding)
 	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
 
-	guestMemory := resource.MustParse("3Gi")
+	// Resource allocation: k3s agent needs less than full kubeadm node
+	// Default: 1 CPU, 1Gi memory (k3s agent ~400-512Mi + overhead)
+	// TODO: Get from pod requests + overhead when MaroonedPodsConfig is available
+	guestMemory := resource.MustParse("1Gi")
 	vmi.Spec.Domain.Memory = &virtv1.Memory{Guest: &guestMemory}
 
 	vmi.Spec.Domain.CPU = &virtv1.CPU{
 		Threads: 1,
 		Sockets: 1,
-		Cores:   2,
+		Cores:   1,
 	}
 
+	// Optional: Enable kernelBoot for faster startup
+	// TODO: When MaroonedPodsConfig CRD is available:
+	// enableKernelBoot := false
+	// if config != nil && config.Spec.EnableKernelBoot {
+	//     enableKernelBoot = true
+	//     kernelPath := "/vmlinuz"
+	//     initrdPath := "/initrd.img"
+	//     kernelArgs := "console=ttyS0 root=/dev/vda rw"
+	//     if config.Spec.KernelBootConfig != nil {
+	//         if config.Spec.KernelBootConfig.KernelPath != "" {
+	//             kernelPath = config.Spec.KernelBootConfig.KernelPath
+	//         }
+	//         if config.Spec.KernelBootConfig.InitrdPath != "" {
+	//             initrdPath = config.Spec.KernelBootConfig.InitrdPath
+	//         }
+	//         if config.Spec.KernelBootConfig.KernelArgs != "" {
+	//             kernelArgs = config.Spec.KernelBootConfig.KernelArgs
+	//         }
+	//     }
+	//     vmi.Spec.Domain.Firmware = &virtv1.Firmware{
+	//         KernelBoot: &virtv1.KernelBoot{
+	//             Container: &virtv1.KernelBootContainer{
+	//                 Image:      nodeImage,
+	//                 KernelPath: kernelPath,
+	//                 InitrdPath: initrdPath,
+	//             },
+	//             KernelArgs: kernelArgs,
+	//         },
+	//     }
+	// }
+
+	// Root disk: bootc-based k3s node image
 	vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
 		virtv1.Disk{
-			Name: "containerdisk",
+			Name: "rootdisk",
 			DiskDevice: virtv1.DiskDevice{
 				Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}})
 	vmi.Spec.Volumes = append(vmi.Spec.Volumes,
 		virtv1.Volume{
-			Name: "containerdisk",
+			Name: "rootdisk",
 			VolumeSource: virtv1.VolumeSource{
 				ContainerDisk: &virtv1.ContainerDiskSource{
-					Image: nodeVmImageTemplate},
+					Image: nodeImage},
 			}},
 	)
 
+	// Cloud-init disk: provides k3s join configuration
 	vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
 		virtv1.Disk{
 			Name: "cloudinitdisk",
@@ -402,6 +429,28 @@ passwd vladik
 				},
 			}},
 	)
+
+	// Readiness probe: Check if k3s-agent is active
+	// This replaces the generic VM running check with k3s-specific health
+	vmi.Spec.ReadinessProbe = &virtv1.Probe{
+		InitialDelaySeconds: 30,
+		TimeoutSeconds:      10,
+		PeriodSeconds:       10,
+		SuccessThreshold:    1,
+		FailureThreshold:    3,
+		Handler: virtv1.Handler{
+			Exec: &v1.ExecAction{
+				Command: []string{
+					"/bin/sh",
+					"-c",
+					"systemctl is-active k3s-agent",
+				},
+			},
+		},
+	}
+
+	klog.Infof("Created VMI spec for pod %s/%s: image=%s, cpu=%d, memory=%s",
+		pod.Namespace, pod.Name, nodeImage, vmi.Spec.Domain.CPU.Cores, guestMemory.String())
 
 	return vmi
 }
