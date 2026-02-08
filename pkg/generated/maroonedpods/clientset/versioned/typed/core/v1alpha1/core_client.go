@@ -29,6 +29,7 @@ import (
 type MaroonedpodsV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	MaroonedPodsesGetter
+	MaroonedPodsConfigsGetter
 }
 
 // MaroonedpodsV1alpha1Client is used to interact with features provided by the maroonedpods.io group.
@@ -38,6 +39,10 @@ type MaroonedpodsV1alpha1Client struct {
 
 func (c *MaroonedpodsV1alpha1Client) MaroonedPodses() MaroonedPodsInterface {
 	return newMaroonedPodses(c)
+}
+
+func (c *MaroonedpodsV1alpha1Client) MaroonedPodsConfigs() MaroonedPodsConfigInterface {
+	return newMaroonedPodsConfigs(c)
 }
 
 // NewForConfig creates a new MaroonedpodsV1alpha1Client for the given config.

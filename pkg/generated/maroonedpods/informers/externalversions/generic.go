@@ -55,6 +55,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 	// Group=maroonedpods.io, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithResource("maroonedpodses"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Maroonedpods().V1alpha1().MaroonedPodses().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("maroonedpodsconfigs"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Maroonedpods().V1alpha1().MaroonedPodsConfigs().Informer()}, nil
 
 	}
 

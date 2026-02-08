@@ -1,0 +1,36 @@
+apiVersion: maroonedpods.io/v1alpha1
+kind: MaroonedPodsConfig
+metadata:
+  name: default
+spec:
+  # Container disk image to use for virtual node VMs
+  # Default: quay.io/capk/ubuntu-2004-container-disk:v1.26.0
+  nodeImage: quay.io/capk/ubuntu-2004-container-disk:v1.26.0
+
+  # Number of pre-booted VM nodes to keep in warm pool
+  # Set to 0 to disable warm pool (VMs created on-demand)
+  # Default: 0
+  warmPoolSize: 0
+
+  # Base VM resources (CPU/memory) for virtual nodes
+  # These are the resources allocated to the VM itself
+  baseVMResources:
+    # CPU cores for the VM
+    # Default: 2
+    cpu: 2
+
+    # Memory for the VM in Mi (MiB)
+    # Default: 3072 (3 GiB)
+    memoryMi: 3072
+
+  # Taint key prefix for pod-specific node affinity
+  # The full taint key will be: <nodeTaintKey>/<pod-name>
+  # Default: maroonedpods.io
+  nodeTaintKey: maroonedpods.io
+
+  # Resource overhead to add on top of pod requests for VM sizing
+  # This accounts for kubelet, kube-proxy, and other node components
+  # Uncomment to customize (defaults: 500m CPU, 512Mi memory)
+  # resourceOverhead:
+  #   cpu: 500m
+  #   memory: 512Mi
