@@ -64,7 +64,19 @@ func (v Handler) mutatePod(pod *v1.Pod) (*admissionv1.AdmissionReview, error) {
 		return nil, err
 	}
 
-	patch := fmt.Sprintf(`[{"op": "add", "path": "/spec/schedulingGates", "value": %s}, {"op": "add", "path": "/spec/tolerations/-", "value": {"key": "%s.maroonedpods.io", "operator":"Exists", "effect": "NoSchedule"}}, {"op": "add", "path": "/spec/nodeSelector", "value": {"kubernetes.io/hostname": "%s"}}]`, string(schedulingGatesBytes), pod.Name, pod.Name)
+	// Add finalizer to pod for VMI cleanup
+	finalizers := pod.Finalizers
+	if finalizers == nil {
+		finalizers = []string{}
+	}
+	finalizers = append(finalizers, util.MaroonedPodsFinalizer)
+
+	finalizersBytes, err := json.Marshal(finalizers)
+	if err != nil {
+		return nil, err
+	}
+
+	patch := fmt.Sprintf(`[{"op": "add", "path": "/metadata/finalizers", "value": %s}, {"op": "add", "path": "/spec/schedulingGates", "value": %s}, {"op": "add", "path": "/spec/tolerations/-", "value": {"key": "%s.maroonedpods.io", "operator":"Exists", "effect": "NoSchedule"}}, {"op": "add", "path": "/spec/nodeSelector", "value": {"kubernetes.io/hostname": "%s"}}]`, string(finalizersBytes), string(schedulingGatesBytes), pod.Name, pod.Name)
 	return reviewResponseWithPatch(v.request.UID, true, http.StatusAccepted, allowPodRequest, []byte(patch)), nil
 }
 
