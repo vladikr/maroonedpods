@@ -102,18 +102,59 @@ func (ctrl *MaroonedPodsGateController) addPod(obj interface{}) {
 	}
 }
 func (ctrl *MaroonedPodsGateController) updatePod(old, curr interface{}) {
+	oldPod := old.(*v1.Pod)
 	pod := curr.(*v1.Pod)
 
-	if pod.Spec.SchedulingGates != nil &&
+	// Check if pod still has scheduling gate
+	hasGate := pod.Spec.SchedulingGates != nil &&
 		len(pod.Spec.SchedulingGates) == 1 &&
-		pod.Spec.SchedulingGates[0].Name == util.MaroonedPodsGate {
+		pod.Spec.SchedulingGates[0].Name == util.MaroonedPodsGate
+
+	if hasGate {
 		klog.Info(fmt.Sprintf("Updating pod with gate %s", pod.Name))
 		key, err := KeyFunc(pod)
 		if err != nil {
 			log.Log.Info("Failed to obtain pod key function")
 		}
 		ctrl.queue.Add(key)
+		return
 	}
+
+	// Check if resource requests changed (future: trigger VMI resize)
+	// Note: Kubernetes doesn't allow changing resource requests on running pods
+	// without in-place pod resize (alpha/beta feature). This is for future use.
+	if ctrl.podResourcesChanged(oldPod, pod) {
+		klog.V(2).Infof("Pod %s/%s resource requests changed, VMI resize not yet implemented",
+			pod.Namespace, pod.Name)
+		// TODO: Implement VMI resize when KubeVirt supports it or recreate VMI
+		// For now, just log the change
+	}
+}
+
+// podResourcesChanged checks if pod container resource requests have changed
+func (ctrl *MaroonedPodsGateController) podResourcesChanged(oldPod, newPod *v1.Pod) bool {
+	if len(oldPod.Spec.Containers) != len(newPod.Spec.Containers) {
+		return true
+	}
+
+	for i := range oldPod.Spec.Containers {
+		oldReqs := oldPod.Spec.Containers[i].Resources.Requests
+		newReqs := newPod.Spec.Containers[i].Resources.Requests
+
+		oldCPU := oldReqs[v1.ResourceCPU]
+		newCPU := newReqs[v1.ResourceCPU]
+		if !oldCPU.Equal(newCPU) {
+			return true
+		}
+
+		oldMem := oldReqs[v1.ResourceMemory]
+		newMem := newReqs[v1.ResourceMemory]
+		if !oldMem.Equal(newMem) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (ctrl *MaroonedPodsGateController) deletePod(obj interface{}) {
@@ -337,6 +378,11 @@ func (ctrl *MaroonedPodsGateController) execute(key string) (error, enqueueState
 		return err, BackOff
 	}
 
+	// Handle pod deletion with finalizer
+	if pod.DeletionTimestamp != nil {
+		return ctrl.handlePodDeletion(pod, podKey)
+	}
+
 	// Try to find an existing Virtual Machine Instance
 	var vmi *virtv1.VirtualMachineInstance
 	vmiObj, exist, err := ctrl.vmiInformer.GetStore().GetByKey(podKey)
@@ -387,6 +433,66 @@ func (ctrl *MaroonedPodsGateController) updatePodNodeSelector(pod *v1.Pod, nodeN
 	return nil
 }
 
+// handlePodDeletion handles pod deletion and VMI cleanup when pod has finalizer
+func (ctrl *MaroonedPodsGateController) handlePodDeletion(pod *v1.Pod, key string) (error, enqueueState) {
+	// Check if pod has our finalizer
+	hasFinalizer := false
+	for _, f := range pod.Finalizers {
+		if f == util.MaroonedPodsFinalizer {
+			hasFinalizer = true
+			break
+		}
+	}
+
+	if !hasFinalizer {
+		// No finalizer, nothing to do
+		klog.V(3).Infof("Pod %s/%s being deleted, no finalizer present", pod.Namespace, pod.Name)
+		return nil, Forget
+	}
+
+	klog.Infof("Pod %s/%s being deleted, cleaning up VMI", pod.Namespace, pod.Name)
+
+	// Try to find and delete the VMI
+	vmiObj, exist, err := ctrl.vmiInformer.GetStore().GetByKey(key)
+	if err != nil {
+		klog.Errorf("Failed to fetch VMI for pod %s: %v", key, err)
+		return err, BackOff
+	}
+
+	if exist {
+		vmi := vmiObj.(*virtv1.VirtualMachineInstance)
+		klog.Infof("Deleting VMI %s/%s for pod %s", vmi.Namespace, vmi.Name, pod.Name)
+		err = ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(vmi.Namespace).Delete(
+			context.Background(), vmi.Name, k8smetav1.DeleteOptions{})
+		if err != nil {
+			klog.Errorf("Failed to delete VMI %s/%s: %v", vmi.Namespace, vmi.Name, err)
+			return err, BackOff
+		}
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "VMIDeleted", "Deleted VMI %s for marooned pod", vmi.Name)
+	} else {
+		klog.V(3).Infof("No VMI found for pod %s, skipping VMI deletion", key)
+	}
+
+	// Remove our finalizer
+	podCopy := pod.DeepCopy()
+	newFinalizers := []string{}
+	for _, f := range podCopy.Finalizers {
+		if f != util.MaroonedPodsFinalizer {
+			newFinalizers = append(newFinalizers, f)
+		}
+	}
+	podCopy.Finalizers = newFinalizers
+
+	_, err = ctrl.maroonedpodsCli.CoreV1().Pods(podCopy.Namespace).Update(context.Background(), podCopy, k8smetav1.UpdateOptions{})
+	if err != nil {
+		klog.Errorf("Failed to remove finalizer from pod %s/%s: %v", pod.Namespace, pod.Name, err)
+		return err, BackOff
+	}
+
+	klog.Infof("Removed finalizer from pod %s/%s, cleanup complete", pod.Namespace, pod.Name)
+	return nil, Forget
+}
+
 func (ctrl *MaroonedPodsGateController) releasePod(key string) error {
 	// check if it's deleted
 	log.Log.Infof("Going to release pod: %s", key)
@@ -404,8 +510,9 @@ func (ctrl *MaroonedPodsGateController) releasePod(key string) error {
 		if err != nil {
 			return err
 		}
+		klog.Infof("Pod %s/%s scheduling gate removed, ready to schedule", pod.Namespace, pod.Name)
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "GateRemoved", "Scheduling gate removed, pod ready to schedule on dedicated node")
 	}
-	log.Log.Infof("pod: %s is released", key)
 	return nil
 }
 
@@ -437,8 +544,12 @@ func (ctrl *MaroonedPodsGateController) sync(pod *v1.Pod, vmi *virtv1.VirtualMac
 		vmi, err := ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(pod.Namespace).Create(context.Background(), vmi, k8smetav1.CreateOptions{})
 		if err != nil {
 			log.Log.Reason(err).Error("failed to create VMI")
+			ctrl.recorder.Eventf(pod, v1.EventTypeWarning, "VMICreationFailed", "Failed to create VMI: %v", err)
 			return err
 		}
+		klog.Infof("Created VMI %s/%s for pod %s", vmi.Namespace, vmi.Name, pod.Name)
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "VMICreated", "Created VirtualMachineInstance %s", vmi.Name)
+		return fmt.Errorf("waiting for VMI %s to start", vmi.Name)
 	}
 
 	if vmi.Status.Phase == virtv1.Running {
@@ -452,22 +563,29 @@ func (ctrl *MaroonedPodsGateController) sync(pod *v1.Pod, vmi *virtv1.VirtualMac
 		} else {
 			vmi = vmiObj.(*virtv1.VirtualMachineInstance)
 			if vmi.Status.Phase != virtv1.Running {
-				return fmt.Errorf("wainting for VMI %s to become Running, currently %s", vmi.Name, string(vmi.Status.Phase))
+				klog.V(2).Infof("Waiting for VMI %s to become Running, currently %s", vmi.Name, string(vmi.Status.Phase))
+				return fmt.Errorf("waiting for VMI %s to become Running, currently %s", vmi.Name, string(vmi.Status.Phase))
 			}
 		}
 
+	} else {
+		klog.V(2).Infof("VMI %s not yet Running, current phase: %s", vmi.Name, string(vmi.Status.Phase))
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "WaitingForVMI", "Waiting for VMI %s to become Running (current: %s)", vmi.Name, string(vmi.Status.Phase))
+		return fmt.Errorf("waiting for VMI %s to become Running, currently %s", vmi.Name, string(vmi.Status.Phase))
 	}
 
 	_, nodeExist, err := ctrl.nodeInformer.GetStore().GetByKey(vmi.Name)
-	log.Log.Infof("node %s is already present", vmi.Name)
 	if err != nil {
 		log.Log.Reason(err).Error("Failed to fetch node from cache.")
 		return err
 	}
 	if !nodeExist {
-		log.Log.V(4).Infof("Node not found in cache %s", key)
-		return err
+		klog.V(2).Infof("Waiting for node %s to register", vmi.Name)
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "WaitingForNode", "Waiting for node %s to join cluster", vmi.Name)
+		return fmt.Errorf("waiting for node %s to register", vmi.Name)
 	} else {
+		klog.Infof("Node %s is ready, releasing pod %s", vmi.Name, pod.Name)
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "NodeReady", "Node %s joined cluster, releasing pod for scheduling", vmi.Name)
 		err = ctrl.releasePod(key)
 		if err != nil {
 			return err
@@ -840,9 +958,93 @@ passwd vladik
 	return createdVMI, nil
 }
 
+// calculateVMResourcesFromPod calculates VM resources based on pod requests plus overhead.
+// Returns CPU cores and memory in Mi.
+func (ctrl *MaroonedPodsGateController) calculateVMResourcesFromPod(pod *v1.Pod) (cpuCores uint32, memoryMi uint64) {
+	config := ctrl.getConfig()
+
+	// Get base VM resources as minimum floor
+	baseVMCPU := uint32(2)
+	baseVMMemory := uint64(3072) // 3Gi in Mi
+	if config != nil {
+		if config.Spec.BaseVMResources.CPU > 0 {
+			baseVMCPU = config.Spec.BaseVMResources.CPU
+		}
+		if config.Spec.BaseVMResources.MemoryMi > 0 {
+			baseVMMemory = config.Spec.BaseVMResources.MemoryMi
+		}
+	}
+
+	// Default overhead: 500m CPU, 512Mi memory
+	overheadCPUMillis := int64(500)
+	overheadMemoryBytes := int64(512 * 1024 * 1024) // 512Mi
+
+	// Apply configured overhead if present
+	if config != nil && config.Spec.ResourceOverhead != nil {
+		if cpu, ok := (*config.Spec.ResourceOverhead)[v1.ResourceCPU]; ok {
+			overheadCPUMillis = cpu.MilliValue()
+		}
+		if mem, ok := (*config.Spec.ResourceOverhead)[v1.ResourceMemory]; ok {
+			overheadMemoryBytes = mem.Value()
+		}
+	}
+
+	// Sum up all container requests
+	totalPodCPUMillis := int64(0)
+	totalPodMemoryBytes := int64(0)
+
+	for _, container := range pod.Spec.Containers {
+		if cpu, ok := container.Resources.Requests[v1.ResourceCPU]; ok {
+			totalPodCPUMillis += cpu.MilliValue()
+		}
+		if mem, ok := container.Resources.Requests[v1.ResourceMemory]; ok {
+			totalPodMemoryBytes += mem.Value()
+		}
+	}
+
+	// Add overhead to pod requests
+	totalCPUMillis := totalPodCPUMillis + overheadCPUMillis
+	totalMemoryBytes := totalPodMemoryBytes + overheadMemoryBytes
+
+	// Convert to VM units (cores and Mi)
+	// Round up CPU to nearest core
+	calculatedCPU := uint32((totalCPUMillis + 999) / 1000) // ceiling division
+	if calculatedCPU == 0 {
+		calculatedCPU = 1 // minimum 1 core
+	}
+
+	// Convert bytes to Mi
+	calculatedMemoryMi := uint64(totalMemoryBytes / (1024 * 1024))
+	if calculatedMemoryMi == 0 {
+		calculatedMemoryMi = 512 // minimum 512Mi
+	}
+
+	// Use maximum of calculated and base (floor)
+	cpuCores = calculatedCPU
+	if baseVMCPU > cpuCores {
+		cpuCores = baseVMCPU
+	}
+
+	memoryMi = calculatedMemoryMi
+	if baseVMMemory > memoryMi {
+		memoryMi = baseVMMemory
+	}
+
+	klog.V(3).Infof("Pod %s/%s resource calculation: pod_cpu=%dm pod_mem=%dMi overhead_cpu=%dm overhead_mem=%dMi -> VM: cpu=%d mem=%dMi",
+		pod.Namespace, pod.Name,
+		totalPodCPUMillis, totalPodMemoryBytes/(1024*1024),
+		overheadCPUMillis, overheadMemoryBytes/(1024*1024),
+		cpuCores, memoryMi)
+
+	return
+}
+
 func (ctrl *MaroonedPodsGateController) createVMIFromPod(pod *v1.Pod) *virtv1.VirtualMachineInstance {
-	// Get VM resources from config (with defaults)
-	cpuCores, memoryMi, nodeImage, taintKey := ctrl.getVMResourcesFromConfig()
+	// Calculate VM resources based on pod requests + overhead
+	cpuCores, memoryMi := ctrl.calculateVMResourcesFromPod(pod)
+
+	// Get node image and taint key from config
+	_, _, nodeImage, taintKey := ctrl.getVMResourcesFromConfig()
 
 	/*	userData := fmt.Sprintf(`#!/bin/sh
 
