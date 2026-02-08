@@ -123,7 +123,32 @@ func getControllerClusterPolicyRules() []rbacv1.PolicyRule {
 			},
 			Verbs: []string{
 				"update",
-                "patch", 
+                "patch",
+			},
+		},
+		{
+			APIGroups: []string{
+				"maroonedpods.io",
+			},
+			Resources: []string{
+				"maroonedpodsconfigs",
+			},
+			Verbs: []string{
+				"get",
+				"list",
+				"watch",
+			},
+		},
+		{
+			APIGroups: []string{
+				"maroonedpods.io",
+			},
+			Resources: []string{
+				"maroonedpodsconfigs/status",
+			},
+			Verbs: []string{
+				"update",
+				"patch",
 			},
 		},
 		{

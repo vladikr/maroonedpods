@@ -32,6 +32,10 @@ func (c *FakeMaroonedpodsV1alpha1) MaroonedPodses() v1alpha1.MaroonedPodsInterfa
 	return &FakeMaroonedPodses{c}
 }
 
+func (c *FakeMaroonedpodsV1alpha1) MaroonedPodsConfigs() v1alpha1.MaroonedPodsConfigInterface {
+	return &FakeMaroonedPodsConfigs{c}
+}
+
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
 func (c *FakeMaroonedpodsV1alpha1) RESTClient() rest.Interface {
