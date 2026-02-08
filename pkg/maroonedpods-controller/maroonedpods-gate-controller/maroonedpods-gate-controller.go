@@ -75,6 +75,7 @@ func NewMaroonedPodsGateController(maroonedpodsCli client.MaroonedPodsClient,
 	_, err := ctrl.podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    ctrl.addPod,
 		UpdateFunc: ctrl.updatePod,
+		DeleteFunc: ctrl.deletePod,
 	})
 	if err != nil {
 		panic("something is wrong")
@@ -112,6 +113,11 @@ func (ctrl *MaroonedPodsGateController) updatePod(old, curr interface{}) {
 		}
 		ctrl.queue.Add(key)
 	}
+}
+
+func (ctrl *MaroonedPodsGateController) deletePod(obj interface{}) {
+	pod := obj.(*v1.Pod)
+	klog.V(3).Infof("Pod %s/%s deleted", pod.Namespace, pod.Name)
 }
 
 func (ctrl *MaroonedPodsGateController) runWorker() {
@@ -165,6 +171,11 @@ func (ctrl *MaroonedPodsGateController) execute(key string) (error, enqueueState
 		return err, BackOff
 	}
 
+	// Handle pod deletion with finalizer
+	if pod.DeletionTimestamp != nil {
+		return ctrl.handlePodDeletion(pod, podKey)
+	}
+
 	// Try to find an existing Virtual Machine Instance
 	var vmi *virtv1.VirtualMachineInstance
 	vmiObj, exist, err := ctrl.vmiInformer.GetStore().GetByKey(podKey)
@@ -198,6 +209,66 @@ func (ctrl *MaroonedPodsGateController) execute(key string) (error, enqueueState
 	return nil, Immediate
 }
 
+// handlePodDeletion handles pod deletion and VMI cleanup when pod has finalizer
+func (ctrl *MaroonedPodsGateController) handlePodDeletion(pod *v1.Pod, key string) (error, enqueueState) {
+	// Check if pod has our finalizer
+	hasFinalizer := false
+	for _, f := range pod.Finalizers {
+		if f == util.MaroonedPodsFinalizer {
+			hasFinalizer = true
+			break
+		}
+	}
+
+	if !hasFinalizer {
+		// No finalizer, nothing to do
+		klog.V(3).Infof("Pod %s/%s being deleted, no finalizer present", pod.Namespace, pod.Name)
+		return nil, Forget
+	}
+
+	klog.Infof("Pod %s/%s being deleted, cleaning up VMI", pod.Namespace, pod.Name)
+
+	// Try to find and delete the VMI
+	vmiObj, exist, err := ctrl.vmiInformer.GetStore().GetByKey(key)
+	if err != nil {
+		klog.Errorf("Failed to fetch VMI for pod %s: %v", key, err)
+		return err, BackOff
+	}
+
+	if exist {
+		vmi := vmiObj.(*virtv1.VirtualMachineInstance)
+		klog.Infof("Deleting VMI %s/%s for pod %s", vmi.Namespace, vmi.Name, pod.Name)
+		err = ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(vmi.Namespace).Delete(
+			context.Background(), vmi.Name, k8smetav1.DeleteOptions{})
+		if err != nil {
+			klog.Errorf("Failed to delete VMI %s/%s: %v", vmi.Namespace, vmi.Name, err)
+			return err, BackOff
+		}
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "VMIDeleted", "Deleted VMI %s for marooned pod", vmi.Name)
+	} else {
+		klog.V(3).Infof("No VMI found for pod %s, skipping VMI deletion", key)
+	}
+
+	// Remove our finalizer
+	podCopy := pod.DeepCopy()
+	newFinalizers := []string{}
+	for _, f := range podCopy.Finalizers {
+		if f != util.MaroonedPodsFinalizer {
+			newFinalizers = append(newFinalizers, f)
+		}
+	}
+	podCopy.Finalizers = newFinalizers
+
+	_, err = ctrl.maroonedpodsCli.CoreV1().Pods(podCopy.Namespace).Update(context.Background(), podCopy, k8smetav1.UpdateOptions{})
+	if err != nil {
+		klog.Errorf("Failed to remove finalizer from pod %s/%s: %v", pod.Namespace, pod.Name, err)
+		return err, BackOff
+	}
+
+	klog.Infof("Removed finalizer from pod %s/%s, cleanup complete", pod.Namespace, pod.Name)
+	return nil, Forget
+}
+
 func (ctrl *MaroonedPodsGateController) releasePod(key string) error {
 	// check if it's deleted
 	log.Log.Infof("Going to release pod: %s", key)
@@ -215,19 +286,25 @@ func (ctrl *MaroonedPodsGateController) releasePod(key string) error {
 		if err != nil {
 			return err
 		}
+		klog.Infof("Pod %s/%s scheduling gate removed, ready to schedule", pod.Namespace, pod.Name)
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "GateRemoved", "Scheduling gate removed, pod ready to schedule on dedicated node")
 	}
-	log.Log.Infof("pod: %s is released", key)
 	return nil
 }
 
 func (ctrl *MaroonedPodsGateController) sync(pod *v1.Pod, vmi *virtv1.VirtualMachineInstance, key string) error {
 	if vmi == nil {
+		klog.Infof("Creating VMI for pod %s/%s", pod.Namespace, pod.Name)
 		vmi := ctrl.createVMIFromPod(pod)
 		vmi, err := ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(pod.Namespace).Create(context.Background(), vmi, k8smetav1.CreateOptions{})
 		if err != nil {
 			log.Log.Reason(err).Error("failed to create VMI")
+			ctrl.recorder.Eventf(pod, v1.EventTypeWarning, "VMICreationFailed", "Failed to create VMI: %v", err)
 			return err
 		}
+		klog.Infof("Created VMI %s/%s for pod %s", vmi.Namespace, vmi.Name, pod.Name)
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "VMICreated", "Created VirtualMachineInstance %s", vmi.Name)
+		return fmt.Errorf("waiting for VMI %s to start", vmi.Name)
 	}
 
 	if vmi.Status.Phase == virtv1.Running {
@@ -241,22 +318,29 @@ func (ctrl *MaroonedPodsGateController) sync(pod *v1.Pod, vmi *virtv1.VirtualMac
 		} else {
 			vmi = vmiObj.(*virtv1.VirtualMachineInstance)
 			if vmi.Status.Phase != virtv1.Running {
-				return fmt.Errorf("wainting for VMI %s to become Running, currently %s", vmi.Name, string(vmi.Status.Phase))
+				klog.V(2).Infof("Waiting for VMI %s to become Running, currently %s", vmi.Name, string(vmi.Status.Phase))
+				return fmt.Errorf("waiting for VMI %s to become Running, currently %s", vmi.Name, string(vmi.Status.Phase))
 			}
 		}
 
+	} else {
+		klog.V(2).Infof("VMI %s not yet Running, current phase: %s", vmi.Name, string(vmi.Status.Phase))
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "WaitingForVMI", "Waiting for VMI %s to become Running (current: %s)", vmi.Name, string(vmi.Status.Phase))
+		return fmt.Errorf("waiting for VMI %s to become Running, currently %s", vmi.Name, string(vmi.Status.Phase))
 	}
 
 	_, nodeExist, err := ctrl.nodeInformer.GetStore().GetByKey(vmi.Name)
-	log.Log.Infof("node %s is already present", vmi.Name)
 	if err != nil {
 		log.Log.Reason(err).Error("Failed to fetch node from cache.")
 		return err
 	}
 	if !nodeExist {
-		log.Log.V(4).Infof("Node not found in cache %s", key)
-		return err
+		klog.V(2).Infof("Waiting for node %s to register", vmi.Name)
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "WaitingForNode", "Waiting for node %s to join cluster", vmi.Name)
+		return fmt.Errorf("waiting for node %s to register", vmi.Name)
 	} else {
+		klog.Infof("Node %s is ready, releasing pod %s", vmi.Name, pod.Name)
+		ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "NodeReady", "Node %s joined cluster, releasing pod for scheduling", vmi.Name)
 		err = ctrl.releasePod(key)
 		if err != nil {
 			return err
