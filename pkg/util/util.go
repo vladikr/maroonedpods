@@ -77,6 +77,16 @@ const (
 	SecretResourceName             = "maroonedpods-server-cert"
 	MaroonedPodsServerResourceName = "maroonedpods-server"
 	ControllerClusterRoleName      = ControllerPodName
+
+	// Warm pool labels
+	WarmPoolStateLabel     = "maroonedpods.io/pool-state"
+	WarmPoolClaimedByLabel = "maroonedpods.io/claimed-by"
+	WarmPoolVMNamePrefix   = "maroonedpods-pool-"
+
+	// Warm pool states
+	PoolStateAvailable = "available"
+	PoolStateClaimed   = "claimed"
+	PoolStateCreating  = "creating"
 )
 
 var commonLabels = map[string]string{
