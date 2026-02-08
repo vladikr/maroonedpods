@@ -19,6 +19,7 @@ import (
 	"maroonedpods.io/maroonedpods/pkg/client"
 	"maroonedpods.io/maroonedpods/pkg/log"
 	"maroonedpods.io/maroonedpods/pkg/util"
+	v1alpha1 "maroonedpods.io/maroonedpods/staging/src/maroonedpods.io/api/pkg/apis/core/v1alpha1"
 	"time"
 )
 
@@ -39,6 +40,7 @@ type MaroonedPodsGateController struct {
 	podInformer                  cache.SharedIndexInformer
 	vmiInformer                  cache.SharedIndexInformer
 	nodeInformer                 cache.SharedIndexInformer
+	configInformer               cache.SharedIndexInformer
 	maroonedpodsCli              client.MaroonedPodsClient
 	recorder                     record.EventRecorder
 	stop                         <-chan struct{}
@@ -50,6 +52,7 @@ func NewMaroonedPodsGateController(maroonedpodsCli client.MaroonedPodsClient,
 	podInformer cache.SharedIndexInformer,
 	vmiInformer cache.SharedIndexInformer,
 	nodeInformer cache.SharedIndexInformer,
+	configInformer cache.SharedIndexInformer,
 	stop <-chan struct{},
 	enqueueAllGateControllerChan <-chan struct{},
 ) *MaroonedPodsGateController {
@@ -61,6 +64,7 @@ func NewMaroonedPodsGateController(maroonedpodsCli client.MaroonedPodsClient,
 		podInformer:     podInformer,
 		vmiInformer:     vmiInformer,
 		nodeInformer:    nodeInformer,
+		configInformer:  configInformer,
 		queue:           workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "maroonedpods-queue"),
 
 		recorder:                     eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: util.ControllerPodName}),
@@ -292,7 +296,53 @@ func (ctrl *MaroonedPodsGateController) Run(ctx context.Context, threadiness int
 
 }
 
+// getConfig retrieves the MaroonedPodsConfig from the informer cache.
+// Returns the first config found, or nil if none exists.
+func (ctrl *MaroonedPodsGateController) getConfig() *v1alpha1.MaroonedPodsConfig {
+	configs := ctrl.configInformer.GetStore().List()
+	if len(configs) == 0 {
+		return nil
+	}
+	// Return the first config (there should typically be only one cluster-scoped config)
+	return configs[0].(*v1alpha1.MaroonedPodsConfig)
+}
+
+// getVMResourcesFromConfig returns VM resources from config with defaults.
+// Default: 2 CPU, 3072Mi (3Gi) memory
+func (ctrl *MaroonedPodsGateController) getVMResourcesFromConfig() (cpuCores uint32, memoryMi uint64, nodeImage string, taintKey string) {
+	// Set defaults
+	cpuCores = 2
+	memoryMi = 3072
+	nodeImage = "quay.io/capk/ubuntu-2004-container-disk:v1.26.0"
+	taintKey = "maroonedpods.io"
+
+	config := ctrl.getConfig()
+	if config == nil {
+		klog.V(3).Info("No MaroonedPodsConfig found, using defaults")
+		return
+	}
+
+	// Apply config values if set
+	if config.Spec.BaseVMResources.CPU > 0 {
+		cpuCores = config.Spec.BaseVMResources.CPU
+	}
+	if config.Spec.BaseVMResources.MemoryMi > 0 {
+		memoryMi = config.Spec.BaseVMResources.MemoryMi
+	}
+	if config.Spec.NodeImage != "" {
+		nodeImage = config.Spec.NodeImage
+	}
+	if config.Spec.NodeTaintKey != "" {
+		taintKey = config.Spec.NodeTaintKey
+	}
+
+	klog.V(3).Infof("Using VM resources: CPU=%d, Memory=%dMi, Image=%s, TaintKey=%s", cpuCores, memoryMi, nodeImage, taintKey)
+	return
+}
+
 func (ctrl *MaroonedPodsGateController) createVMIFromPod(pod *v1.Pod) *virtv1.VirtualMachineInstance {
+	// Get VM resources from config (with defaults)
+	cpuCores, memoryMi, nodeImage, taintKey := ctrl.getVMResourcesFromConfig()
 
 	/*	userData := fmt.Sprintf(`#!/bin/sh
 
@@ -329,7 +379,7 @@ apiVersion: kubeadm.k8s.io/v1beta3
 kind: JoinConfiguration
 nodeRegistration:
   taints:
-    - key: "%s.maroonedpods.io"
+    - key: "%s.%s"
       value: "created"
       effect: "NoSchedule"
 discovery:
@@ -342,10 +392,9 @@ EOF
 kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=all --v=5
 useradd -s /bin/bash -d /home/vladik/ -m -G sudo vladik
 passwd vladik
-`, pod.Name)
+`, pod.Name, taintKey)
 
 	encodedData := base64.StdEncoding.EncodeToString([]byte(userData))
-	nodeVmImageTemplate := "quay.io/capk/ubuntu-2004-container-disk:v1.26.0"
 	vmi := virtv1.NewVMIReferenceFromNameWithNS(pod.Namespace, pod.Name)
 	vmi.Spec = virtv1.VirtualMachineInstanceSpec{Domain: virtv1.DomainSpec{}}
 	vmi.TypeMeta = k8smetav1.TypeMeta{
@@ -364,13 +413,15 @@ passwd vladik
 	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeBinding)
 	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
 
-	guestMemory := resource.MustParse("3Gi")
+	// Use config-driven memory (memoryMi is in Mi units)
+	guestMemory := resource.MustParse(fmt.Sprintf("%dMi", memoryMi))
 	vmi.Spec.Domain.Memory = &virtv1.Memory{Guest: &guestMemory}
 
+	// Use config-driven CPU cores
 	vmi.Spec.Domain.CPU = &virtv1.CPU{
 		Threads: 1,
 		Sockets: 1,
-		Cores:   2,
+		Cores:   cpuCores,
 	}
 
 	vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
@@ -383,7 +434,7 @@ passwd vladik
 			Name: "containerdisk",
 			VolumeSource: virtv1.VolumeSource{
 				ContainerDisk: &virtv1.ContainerDiskSource{
-					Image: nodeVmImageTemplate},
+					Image: nodeImage},
 			}},
 	)
 

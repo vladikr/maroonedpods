@@ -26,6 +26,8 @@ import (
 type Interface interface {
 	// MaroonedPodses returns a MaroonedPodsInformer.
 	MaroonedPodses() MaroonedPodsInformer
+	// MaroonedPodsConfigs returns a MaroonedPodsConfigInformer.
+	MaroonedPodsConfigs() MaroonedPodsConfigInformer
 }
 
 type version struct {
@@ -42,4 +44,9 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 // MaroonedPodses returns a MaroonedPodsInformer.
 func (v *version) MaroonedPodses() MaroonedPodsInformer {
 	return &maroonedPodsInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// MaroonedPodsConfigs returns a MaroonedPodsConfigInformer.
+func (v *version) MaroonedPodsConfigs() MaroonedPodsConfigInformer {
+	return &maroonedPodsConfigInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
