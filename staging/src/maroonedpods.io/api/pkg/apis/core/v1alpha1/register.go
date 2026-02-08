@@ -54,6 +54,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&MaroonedPods{},
 		&MaroonedPodsList{},
+		&MaroonedPodsConfig{},
+		&MaroonedPodsConfigList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
@@ -67,6 +69,8 @@ func AddKnownTypesGenerator(groupVersions []schema.GroupVersion) func(scheme *ru
 			scheme.AddKnownTypes(groupVersion,
 				&MaroonedPods{},
 				&MaroonedPodsList{},
+				&MaroonedPodsConfig{},
+				&MaroonedPodsConfigList{},
 			)
 			metav1.AddToGroupVersion(scheme, groupVersion)
 		}
