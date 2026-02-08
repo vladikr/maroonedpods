@@ -19,6 +19,8 @@
 		maroonedpods_controller \
 		maroonedpods_server \
 		maroonedpods_operator \
+		build-node-image \
+		push-node-image \
 		fmt \
 		goveralls \
 		release-description \
@@ -103,6 +105,18 @@ maroonedpods_operator:
 maroonedpods_server:
 	go build -o maroonedpods_server -v cmd/maroonedpods-server/*.go
 	chmod 777 maroonedpods_server
+
+# Build the bootc-based k3s node image
+build-node-image:
+	@echo "Building MaroonedPods node image..."
+	podman build -t quay.io/vladikr/marooned-node:latest -f images/node/Containerfile.node images/node/
+	@echo "Node image built successfully"
+
+# Push the node image to registry
+push-node-image: build-node-image
+	@echo "Pushing MaroonedPods node image..."
+	podman push quay.io/vladikr/marooned-node:latest
+	@echo "Node image pushed successfully"
 
 csv-generator:
 	go build -o bin/csv-generator -v tools/csv-generator/csv-generator.go

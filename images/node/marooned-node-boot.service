@@ -1,0 +1,19 @@
+[Unit]
+Description=MaroonedPods Node Bootstrap Service
+After=network-online.target
+Wants=network-online.target
+Before=k3s-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/marooned-node-boot.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+# Restart policy
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
