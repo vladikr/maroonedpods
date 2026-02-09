@@ -285,12 +285,22 @@ make all
 
 ### Run Tests
 
+MaroonedPods uses Ginkgo/Gomega for testing.
+
 ```bash
-# Unit tests
+# Unit tests (pkg and cmd packages)
 make test
 
-# Functional tests
+# Functional/E2E tests (requires cluster)
+# This will: start cluster, deploy MaroonedPods, run tests, tear down
 make functest
+
+# Or run tests manually step-by-step:
+make cluster-up        # Start test cluster with KubeVirt
+make cluster-sync      # Deploy MaroonedPods operator and CRDs
+make build-functest    # Build test binary
+make functest          # Run tests
+make cluster-down      # Clean up
 ```
 
 ### Cluster Setup for Development
@@ -299,11 +309,48 @@ make functest
 # Start kind cluster with KubeVirt
 make cluster-up
 
-# Deploy MaroonedPods
+# Deploy MaroonedPods operator, CRDs, and sample config
 make cluster-sync
 
-# Cleanup
+# Interact with the cluster
+./kubevirtci/kubectl.sh get pods -A
+./kubevirtci/kubectl.sh get maroonedpodsconfigs
+
+# Run a test pod
+cat <<EOF | ./kubevirtci/kubectl.sh apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-nginx
+  labels:
+    maroonedpods.io/maroon: "true"
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+EOF
+
+# Watch the pod get isolated in a VM
+./kubevirtci/kubectl.sh get pods -w
+./kubevirtci/kubectl.sh get vmi
+
+# Cleanup cluster
 make cluster-down
+```
+
+### Testing Environment Variables
+
+You can customize the test environment with these variables:
+
+- `KUBEVIRT_PROVIDER`: Kubernetes provider (default: `k8s-1.27`)
+- `KUBEVIRT_RELEASE`: KubeVirt version (default: `latest_nightly`)
+- `MAROONEDPODS_NAMESPACE`: Namespace for operator (default: `maroonedpods`)
+- `DOCKER_PREFIX`: Container image prefix
+- `DOCKER_TAG`: Container image tag
+
+Example:
+```bash
+KUBEVIRT_PROVIDER=k8s-1.27 KUBEVIRT_RELEASE=v1.1.0 make cluster-up
 ```
 
 ## 🤝 Contributing
