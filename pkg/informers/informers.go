@@ -20,6 +20,11 @@ func GetMaroonedPodsInformer(maroonedpodsCli client.MaroonedPodsClient) cache.Sh
 	return cache.NewSharedIndexInformer(listWatcher, &v1alpha13.MaroonedPods{}, 1*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 }
 
+func GetMaroonedPodsConfigInformer(maroonedpodsCli client.MaroonedPodsClient) cache.SharedIndexInformer {
+	listWatcher := NewListWatchFromClient(maroonedpodsCli.RestClient(), "maroonedpodsconfigs", metav1.NamespaceAll, fields.Everything(), labels.Everything())
+	return cache.NewSharedIndexInformer(listWatcher, &v1alpha13.MaroonedPodsConfig{}, 1*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+}
+
 func GetPodInformer(maroonedpodsCli client.MaroonedPodsClient) cache.SharedIndexInformer {
 	listWatcher := NewListWatchFromClient(maroonedpodsCli.CoreV1().RESTClient(), "pods", metav1.NamespaceAll, fields.Everything(), labels.Everything())
 	return cache.NewSharedIndexInformer(listWatcher, &v1.Pod{}, 1*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
