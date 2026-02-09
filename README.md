@@ -18,33 +18,33 @@ MaroonedPods provides **VM-level isolation for Kubernetes Pods** without changin
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Regular Kubernetes Pod                                  │
-│  apiVersion: v1                                          │
-│  kind: Pod                                               │
-│  metadata:                                               │
-│    labels:                                               │
+│  Regular Kubernetes Pod                                 │
+│  apiVersion: v1                                         │
+│  kind: Pod                                              │
+│  metadata:                                              │
+│    labels:                                              │
 │      maroonedpods.io/maroon: "true"  ← Just add this!   │
 └─────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────┐
-│  MaroonedPods Controller                                 │
-│  1. Adds scheduling gate to pod                          │
-│  2. Creates dedicated VirtualMachineInstance             │
-│  3. VM boots with bootc + k3s agent                      │
-│  4. Node joins cluster with pod-specific taint           │
-│  5. Removes gate → Pod schedules to dedicated node       │
+│  MaroonedPods Controller                                │
+│  1. Adds scheduling gate to pod                         │
+│  2. Creates dedicated VirtualMachineInstance            │
+│  3. VM boots with bootc + k3s agent                     │
+│  4. Node joins cluster with pod-specific taint          │
+│  5. Removes gate → Pod schedules to dedicated node      │
 └─────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────┐
 │  KubeVirt VirtualMachineInstance                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  k3s agent node (minimal Kubernetes node)        │  │
-│  │  - Joins with pod-specific label & taint         │  │
-│  │  - Only this pod can schedule here               │  │
-│  │  ┌────────────────────────────────────────────┐ │  │
-│  │  │  Your Pod (running isolated in VM)         │ │  │
-│  │  └────────────────────────────────────────────┘ │  │
-│  └──────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  k3s agent node (minimal Kubernetes node)        │   │
+│  │  - Joins with pod-specific label & taint         │   │
+│  │  - Only this pod can schedule here               │   │
+│  │  ┌────────────────────────────────────────────┐  │   │
+│  │  │  Your Pod (running isolated in VM)         │  │   │
+│  │  └────────────────────────────────────────────┘  │   │
+│  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
 
