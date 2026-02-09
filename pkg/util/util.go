@@ -74,6 +74,7 @@ const (
 	OperatorServiceAccountName     = "maroonedpods-operator"
 	MaroonedPodsGate               = "MaroonedPodsGate"
 	MaroonedPodsFinalizer          = "maroonedpods.io/vmi-cleanup"
+	MaroonedPodLabel               = "maroonedpods.io/maroon"
 	ControllerResourceName         = ControllerPodName
 	SecretResourceName             = "maroonedpods-server-cert"
 	MaroonedPodsServerResourceName = "maroonedpods-server"
