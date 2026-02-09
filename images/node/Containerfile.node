@@ -1,0 +1,42 @@
+FROM quay.io/centos-bootc/centos-bootc:stream9
+
+# Install base system dependencies
+RUN dnf install -y \
+    iptables \
+    iproute \
+    socat \
+    conntrack-tools \
+    cri-tools \
+    curl \
+    tar \
+    systemd \
+    && dnf clean all
+
+# Install CNI plugins
+RUN mkdir -p /opt/cni/bin && \
+    curl -L https://github.com/containernetworking/plugins/releases/download/v1.5.0/cni-plugins-linux-amd64-v1.5.0.tgz \
+    | tar -C /opt/cni/bin -xz
+
+# Install k3s agent binary
+# Using k3s v1.28.5+k3s1 as a stable version
+RUN curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="v1.28.5+k3s1" INSTALL_K3S_EXEC="agent" sh -
+
+# Create directory for marooned join configuration
+RUN mkdir -p /etc/marooned
+
+# Copy boot script
+COPY marooned-node-boot.sh /usr/local/bin/marooned-node-boot.sh
+RUN chmod +x /usr/local/bin/marooned-node-boot.sh
+
+# Copy systemd service unit
+COPY marooned-node-boot.service /etc/systemd/system/marooned-node-boot.service
+
+# Enable the boot service
+RUN systemctl enable marooned-node-boot.service
+
+# Ensure k3s-agent service is disabled by default (will be started by boot script)
+RUN systemctl disable k3s-agent.service || true
+
+# Label the image for bootc
+LABEL io.buildah.version="1.0"
+LABEL io.container.bootc="true"
