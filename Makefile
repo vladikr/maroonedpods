@@ -15,6 +15,7 @@
 .PHONY: manifests \
 		cluster-up cluster-down cluster-sync \
 		test test-functional test-unit test-lint \
+		functest functest-full build-functest \
 		publish \
 		maroonedpods_controller \
 		maroonedpods_server \
@@ -90,6 +91,9 @@ build-functest:
 functest:  WHAT = ./tests/...
 functest: build-functest
 	./hack/build/run-functional-tests.sh ${WHAT} "${TEST_ARGS}"
+
+# Run complete functional test workflow: cluster up -> sync -> test -> down
+functest-full: cluster-down cluster-up cluster-sync functest cluster-down
 
 bootstrap-ginkgo:
 	${DO_BAZ} ./hack/build/bootstrap-ginkgo.sh
