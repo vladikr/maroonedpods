@@ -21,3 +21,7 @@ package v1alpha1
 // MaroonedPodsListerExpansion allows custom methods to be added to
 // MaroonedPodsLister.
 type MaroonedPodsListerExpansion interface{}
+
+// MaroonedPodsConfigListerExpansion allows custom methods to be added to
+// MaroonedPodsConfigLister.
+type MaroonedPodsConfigListerExpansion interface{}

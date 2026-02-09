@@ -53,6 +53,7 @@ type MaroonedPodsControllerApp struct {
 	maroonedPodsGateController   *maroonedpods_controller2.MaroonedPodsGateController
 	podInformer                  cache.SharedIndexInformer
 	maroonedpodsInformer         cache.SharedIndexInformer
+	configInformer               cache.SharedIndexInformer
 	vmiInformer                  cache.SharedIndexInformer
 	nodeInformer                 cache.SharedIndexInformer
 	readyChan                    chan bool
@@ -92,6 +93,7 @@ func Execute() {
 	//app.podInformer = informers.GetPodInformer(app.maroonedpodsCli)
 	app.podInformer = informers.GetPodsToMaroonInformer(app.maroonedpodsCli)
 	app.maroonedpodsInformer = informers.GetMaroonedPodsInformer(app.maroonedpodsCli)
+	app.configInformer = informers.GetMaroonedPodsConfigInformer(app.maroonedpodsCli)
 	app.vmiInformer = informers.GetVMIInformer(app.maroonedpodsCli)
 	app.nodeInformer = informers.GetNodesInformer(app.maroonedpodsCli)
 	stop := ctx.Done()
@@ -128,6 +130,7 @@ func (mca *MaroonedPodsControllerApp) initMaroonedPodsGateController(stop <-chan
 		mca.podInformer,
 		mca.vmiInformer,
 		mca.nodeInformer,
+		mca.configInformer,
 		stop,
 		mca.enqueueAllGateControllerChan,
 	)
@@ -210,6 +213,7 @@ func (mca *MaroonedPodsControllerApp) onStartedLeading() func(ctx context.Contex
 
 		go mca.podInformer.Run(stop)
 		go mca.maroonedpodsInformer.Run(stop)
+		go mca.configInformer.Run(stop)
 		go mca.vmiInformer.Run(stop)
 		go mca.nodeInformer.Run(stop)
 
@@ -218,6 +222,7 @@ func (mca *MaroonedPodsControllerApp) onStartedLeading() func(ctx context.Contex
 			mca.vmiInformer.HasSynced,
 			mca.nodeInformer.HasSynced,
 			mca.maroonedpodsInformer.HasSynced,
+			mca.configInformer.HasSynced,
 		) {
 			klog.Warningf("failed to wait for caches to sync")
 		}

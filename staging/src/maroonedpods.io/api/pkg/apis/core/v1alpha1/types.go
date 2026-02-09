@@ -106,3 +106,97 @@ type MaroonedPodsList struct {
 	Items []MaroonedPods `json:"items"`
 }
 
+// MaroonedPodsConfig is the configuration for MaroonedPods virtual nodes
+// +genclient
+// +genclient:nonNamespaced
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:shortName=mpconfig;mpconfigs,scope=Cluster
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Node Image",type="string",JSONPath=".spec.nodeImage"
+// +kubebuilder:printcolumn:name="Warm Pool Size",type="integer",JSONPath=".spec.warmPoolSize"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+type MaroonedPodsConfig struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec MaroonedPodsConfigSpec `json:"spec"`
+	// +optional
+	Status MaroonedPodsConfigStatus `json:"status,omitempty"`
+}
+
+// VMResources defines CPU and memory resources for virtual machines
+type VMResources struct {
+	// CPU cores for the VM (default: 2)
+	// +kubebuilder:default=2
+	// +optional
+	CPU uint32 `json:"cpu,omitempty"`
+
+	// Memory for the VM in Mi (default: 3072 = 3Gi)
+	// +kubebuilder:default=3072
+	// +optional
+	MemoryMi uint64 `json:"memoryMi,omitempty"`
+}
+
+// MaroonedPodsConfigSpec defines the configuration for MaroonedPods behavior
+type MaroonedPodsConfigSpec struct {
+	// Container disk image to use for virtual node VMs
+	// Default: quay.io/capk/ubuntu-2004-container-disk:v1.26.0
+	// +kubebuilder:default="quay.io/capk/ubuntu-2004-container-disk:v1.26.0"
+	// +optional
+	NodeImage string `json:"nodeImage,omitempty"`
+
+	// Number of pre-booted VM nodes to keep in warm pool
+	// Default: 0 (disabled)
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	WarmPoolSize int32 `json:"warmPoolSize,omitempty"`
+
+	// Base VM resources (CPU/memory) for virtual nodes
+	// These are the resources allocated to the VM itself
+	// +optional
+	BaseVMResources VMResources `json:"baseVMResources,omitempty"`
+
+	// Resource overhead to add on top of pod requests for VM sizing
+	// This accounts for kubelet, kube-proxy, and other node components
+	// Default: 500m CPU, 512Mi memory
+	// +optional
+	ResourceOverhead *corev1.ResourceList `json:"resourceOverhead,omitempty"`
+
+	// Taint key prefix for pod-specific node affinity
+	// Default: "maroonedpods.io"
+	// The full taint key will be: <prefix>/<pod-name>
+	// +kubebuilder:default="maroonedpods.io"
+	// +optional
+	NodeTaintKey string `json:"nodeTaintKey,omitempty"`
+}
+
+// MaroonedPodsConfigStatus defines the observed state of MaroonedPodsConfig
+type MaroonedPodsConfigStatus struct {
+	// Total number of VMs in the warm pool
+	// +optional
+	WarmPoolTotal int32 `json:"warmPoolTotal,omitempty"`
+
+	// Number of available (unclaimed) VMs in the warm pool
+	// +optional
+	WarmPoolAvailable int32 `json:"warmPoolAvailable,omitempty"`
+
+	// Number of claimed VMs currently in use
+	// +optional
+	WarmPoolClaimed int32 `json:"warmPoolClaimed,omitempty"`
+
+	// Conditions represent the latest available observations of the config state
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// MaroonedPodsConfigList provides the list of MaroonedPodsConfig
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type MaroonedPodsConfigList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata"`
+
+	Items []MaroonedPodsConfig `json:"items"`
+}
+
