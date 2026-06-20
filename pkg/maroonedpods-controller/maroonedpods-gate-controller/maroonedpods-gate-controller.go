@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	certv1 "k8s.io/api/certificates/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -670,6 +671,9 @@ func (ctrl *MaroonedPodsGateController) Run(ctx context.Context, threadiness int
 
 	// Start group pool reconciler (cleans up stale groups with no remaining pods)
 	go wait.Until(ctrl.reconcileGroupPools, 60*time.Second, ctrl.stop)
+
+	// Start CSR auto-approval for nodes created by this controller
+	go wait.Until(ctrl.reconcileCSRs, 15*time.Second, ctrl.stop)
 
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(ctrl.runWorker, time.Second, ctrl.stop)
@@ -1781,6 +1785,132 @@ func (ctrl *MaroonedPodsGateController) reconcileGroupPools() {
 		if podCount == 0 {
 			klog.Infof("Group %s has no pods, cleaning up stale VM", groupName)
 			ctrl.cleanupGroupVM(groupName)
+		}
+	}
+}
+
+// reconcileCSRs auto-approves CSRs for nodes created by this controller
+func (ctrl *MaroonedPodsGateController) reconcileCSRs() {
+	csrs, err := ctrl.maroonedpodsCli.CertificatesV1().CertificateSigningRequests().List(
+		context.Background(), k8smetav1.ListOptions{})
+	if err != nil {
+		klog.Errorf("Failed to list CSRs: %v", err)
+		return
+	}
+
+	for _, csr := range csrs.Items {
+		// Skip already approved/denied CSRs
+		approved := false
+		denied := false
+		for _, condition := range csr.Status.Conditions {
+			if condition.Type == "Approved" {
+				approved = true
+			}
+			if condition.Type == "Denied" {
+				denied = true
+			}
+		}
+		if approved || denied {
+			continue
+		}
+
+		// Extract node name from CSR
+		nodeName := ""
+		if csr.Spec.Username != "" {
+			// Username format: system:node:<nodeName>
+			parts := strings.Split(csr.Spec.Username, ":")
+			if len(parts) == 3 && parts[0] == "system" && parts[1] == "node" {
+				nodeName = parts[2]
+			}
+		}
+
+		// Handle bootstrap CSRs (no node name yet, from node-bootstrapper SA)
+		if nodeName == "" {
+			// Check if this is a bootstrap CSR for kubelet client cert
+			if csr.Spec.SignerName == "kubernetes.io/kube-apiserver-client-kubelet" &&
+				strings.Contains(csr.Spec.Username, "node-bootstrapper") {
+				// Approve if we have any group VMI in creating state
+				vmis := ctrl.vmiInformer.GetStore().List()
+				hasCreatingGroupVMI := false
+				for _, obj := range vmis {
+					v := obj.(*virtv1.VirtualMachineInstance)
+					if v.Labels != nil {
+						if state, ok := v.Labels[util.GroupPoolStateLabel]; ok && state == util.GroupPoolStateCreating {
+							hasCreatingGroupVMI = true
+							break
+						}
+					}
+				}
+				if !hasCreatingGroupVMI {
+					continue
+				}
+				// Approve the bootstrap CSR
+				klog.Infof("Auto-approving bootstrap CSR %s (group VMI bootstrapping)", csr.Name)
+				csrCopy := csr.DeepCopy()
+				csrCopy.Status.Conditions = append(csrCopy.Status.Conditions, certv1.CertificateSigningRequestCondition{
+					Type:           certv1.CertificateApproved,
+					Status:         v1.ConditionTrue,
+					Reason:         "MaroonedPodsAutoApproved",
+					Message:        "Auto-approved bootstrap CSR for maroonedpods group node",
+					LastUpdateTime: k8smetav1.Now(),
+				})
+				_, err = ctrl.maroonedpodsCli.CertificatesV1().CertificateSigningRequests().UpdateApproval(
+					context.Background(), csr.Name, csrCopy, k8smetav1.UpdateOptions{})
+				if err != nil {
+					klog.Errorf("Failed to approve bootstrap CSR %s: %v", csr.Name, err)
+				} else {
+					klog.Infof("Successfully approved bootstrap CSR %s", csr.Name)
+				}
+			}
+			continue
+		}
+
+		// Check if this node was created by us (VMI exists with this name)
+		// Search across all namespaces since VMIs can be in any namespace
+		var vmi *virtv1.VirtualMachineInstance
+		vmis := ctrl.vmiInformer.GetStore().List()
+		for _, obj := range vmis {
+			v := obj.(*virtv1.VirtualMachineInstance)
+			if v.Name == nodeName {
+				vmi = v
+				break
+			}
+		}
+		if vmi == nil {
+			continue
+		}
+		// Verify the VMI has our labels (either group mode or 1:1 mode)
+		if vmi.Labels == nil {
+			continue
+		}
+		isOurs := false
+		if _, ok := vmi.Labels[util.GroupLabel]; ok {
+			isOurs = true
+		}
+		if vmi.Labels[util.MaroonedPodsLabel] == "true" {
+			isOurs = true
+		}
+		if !isOurs {
+			continue
+		}
+
+		// Approve the CSR
+		klog.Infof("Auto-approving CSR %s for node %s (VMI %s)", csr.Name, nodeName, vmi.Name)
+		csrCopy := csr.DeepCopy()
+		csrCopy.Status.Conditions = append(csrCopy.Status.Conditions, certv1.CertificateSigningRequestCondition{
+			Type:           certv1.CertificateApproved,
+			Status:         v1.ConditionTrue,
+			Reason:         "MaroonedPodsAutoApproved",
+			Message:        fmt.Sprintf("Auto-approved CSR for maroonedpods node %s", nodeName),
+			LastUpdateTime: k8smetav1.Now(),
+		})
+
+		_, err = ctrl.maroonedpodsCli.CertificatesV1().CertificateSigningRequests().UpdateApproval(
+			context.Background(), csr.Name, csrCopy, k8smetav1.UpdateOptions{})
+		if err != nil {
+			klog.Errorf("Failed to approve CSR %s: %v", csr.Name, err)
+		} else {
+			klog.Infof("Successfully approved CSR %s for node %s", csr.Name, nodeName)
 		}
 	}
 }
