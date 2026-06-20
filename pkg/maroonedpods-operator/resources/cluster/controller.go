@@ -62,6 +62,19 @@ func getControllerClusterPolicyRules() []rbacv1.PolicyRule {
 				"",
 			},
 			Resources: []string{
+				"secrets",
+			},
+			Verbs: []string{
+				"get",
+				"create",
+				"update",
+			},
+		},
+		{
+			APIGroups: []string{
+				"",
+			},
+			Resources: []string{
 				"persistentvolumeclaims",
 			},
 			Verbs: []string{

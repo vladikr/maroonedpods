@@ -138,6 +138,15 @@ type VMResources struct {
 	MemoryMi uint64 `json:"memoryMi,omitempty"`
 }
 
+// JoinConfig configures how VMs register as cluster nodes
+type JoinConfig struct {
+	// IgnitionSecretRef references a Secret in the maroonedpods namespace containing worker Ignition config
+	// The Secret must have a key "userData" with the Ignition JSON
+	// On OpenShift, extract with: oc extract -n openshift-machine-api secret/worker-user-data
+	// +optional
+	IgnitionSecretRef string `json:"ignitionSecretRef,omitempty"`
+}
+
 // MaroonedPodsConfigSpec defines the configuration for MaroonedPods behavior
 type MaroonedPodsConfigSpec struct {
 	// Container disk image to use for virtual node VMs
@@ -170,6 +179,21 @@ type MaroonedPodsConfigSpec struct {
 	// +kubebuilder:default="maroonedpods.io"
 	// +optional
 	NodeTaintKey string `json:"nodeTaintKey,omitempty"`
+
+	// Container disk image to use for group mode VMs
+	// If empty, falls back to NodeImage
+	// +optional
+	GroupNodeImage string `json:"groupNodeImage,omitempty"`
+
+	// Base VM resources for group mode VMs
+	// Group VMs typically need more resources since multiple pods share them
+	// If zero-valued, falls back to BaseVMResources
+	// +optional
+	GroupBaseVMResources VMResources `json:"groupBaseVMResources,omitempty"`
+
+	// JoinConfig configures how VMs register as cluster nodes
+	// +optional
+	JoinConfig JoinConfig `json:"joinConfig,omitempty"`
 }
 
 // MaroonedPodsConfigStatus defines the observed state of MaroonedPodsConfig
@@ -186,9 +210,29 @@ type MaroonedPodsConfigStatus struct {
 	// +optional
 	WarmPoolClaimed int32 `json:"warmPoolClaimed,omitempty"`
 
+	// GroupPools tracks the state of each group's VM
+	// Key is the group name
+	// +optional
+	GroupPools map[string]GroupPoolStatus `json:"groupPools,omitempty"`
+
 	// Conditions represent the latest available observations of the config state
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// GroupPoolStatus tracks the state of a single group's VM
+type GroupPoolStatus struct {
+	// State of the group VM: "creating" or "ready"
+	// +optional
+	State string `json:"state,omitempty"`
+
+	// Name of the VMI for this group
+	// +optional
+	VMIName string `json:"vmiName,omitempty"`
+
+	// Node name once the VM has joined the cluster
+	// +optional
+	NodeName string `json:"nodeName,omitempty"`
 }
 
 // MaroonedPodsConfigList provides the list of MaroonedPodsConfig
