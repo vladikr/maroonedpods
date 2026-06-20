@@ -10,11 +10,23 @@ func createStaticControllerResources(args *FactoryArgs) []client.Object {
 	return []client.Object{
 		createControllerClusterRole(),
 		createControllerClusterRoleBinding(args.Namespace),
+		createControllerSCCRoleBinding(args.Namespace),
 	}
 }
 
 func createControllerClusterRoleBinding(namespace string) *rbacv1.ClusterRoleBinding {
 	return utils2.ResourceBuilder.CreateClusterRoleBinding(utils2.ControllerServiceAccountName, utils2.ControllerClusterRoleName, utils2.ControllerServiceAccountName, namespace)
+}
+
+func createControllerSCCRoleBinding(namespace string) *rbacv1.ClusterRoleBinding {
+	// On OpenShift, grant the controller SA access to privileged SCC for pod mutations
+	// On plain K8s, this ClusterRole doesn't exist and the binding is a no-op
+	return utils2.ResourceBuilder.CreateClusterRoleBinding(
+		"maroonedpods-controller-scc-privileged",
+		"system:openshift:scc:privileged",
+		utils2.ControllerServiceAccountName,
+		namespace,
+	)
 }
 
 func getControllerClusterPolicyRules() []rbacv1.PolicyRule {
@@ -227,6 +239,45 @@ func getControllerClusterPolicyRules() []rbacv1.PolicyRule {
 			Verbs: []string{
 				"list",
 				"watch",
+			},
+		},
+		{
+			APIGroups: []string{
+				"certificates.k8s.io",
+			},
+			Resources: []string{
+				"certificatesigningrequests",
+			},
+			Verbs: []string{
+				"get",
+				"list",
+				"watch",
+			},
+		},
+		{
+			APIGroups: []string{
+				"certificates.k8s.io",
+			},
+			Resources: []string{
+				"certificatesigningrequests/approval",
+			},
+			Verbs: []string{
+				"update",
+			},
+		},
+		{
+			APIGroups: []string{
+				"certificates.k8s.io",
+			},
+			Resources: []string{
+				"signers",
+			},
+			ResourceNames: []string{
+				"kubernetes.io/kube-apiserver-client-kubelet",
+				"kubernetes.io/kubelet-serving",
+			},
+			Verbs: []string{
+				"approve",
 			},
 		},
 	}
