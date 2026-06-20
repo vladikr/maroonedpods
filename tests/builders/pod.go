@@ -100,3 +100,35 @@ func NewMaroonedPodWithResources(name, namespace, cpu, memory string) *v1.Pod {
 		WithRestartPolicy(v1.RestartPolicyAlways).
 		Build()
 }
+
+// WithGroupLabel adds the maroonedpods.io/group label
+func (b *PodBuilder) WithGroupLabel(groupName string) *PodBuilder {
+	b.pod.Labels[util.GroupLabel] = groupName
+	return b
+}
+
+// WithHypershiftClusterLabel adds the hypershift.openshift.io/cluster label
+func (b *PodBuilder) WithHypershiftClusterLabel(clusterName string) *PodBuilder {
+	b.pod.Labels[util.HypershiftClusterLabel] = clusterName
+	return b
+}
+
+// NewGroupPod creates a marooned pod with a group label
+func NewGroupPod(name, namespace, groupName string) *v1.Pod {
+	return NewPod(name, namespace).
+		WithMaroonedLabel().
+		WithGroupLabel(groupName).
+		WithContainer("nginx", "nginx:latest").
+		WithRestartPolicy(v1.RestartPolicyAlways).
+		Build()
+}
+
+// NewHypershiftPod creates a marooned pod with a HyperShift cluster label (no explicit group label)
+func NewHypershiftPod(name, namespace, clusterName string) *v1.Pod {
+	return NewPod(name, namespace).
+		WithMaroonedLabel().
+		WithHypershiftClusterLabel(clusterName).
+		WithContainer("nginx", "nginx:latest").
+		WithRestartPolicy(v1.RestartPolicyAlways).
+		Build()
+}

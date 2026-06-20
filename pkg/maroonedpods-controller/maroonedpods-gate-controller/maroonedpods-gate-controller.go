@@ -3,11 +3,14 @@ package mp_controller
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"strings"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -159,6 +162,13 @@ func (ctrl *MaroonedPodsGateController) podResourcesChanged(oldPod, newPod *v1.P
 
 func (ctrl *MaroonedPodsGateController) deletePod(obj interface{}) {
 	pod := obj.(*v1.Pod)
+
+	// Group pods: cleanup is handled by the finalizer path, not the informer delete handler
+	if groupName, ok := pod.Labels[util.GroupLabel]; ok && groupName != "" {
+		klog.V(3).Infof("Group pod %s/%s deleted (group: %s), cleanup via finalizer", pod.Namespace, pod.Name, groupName)
+		return
+	}
+
 	klog.V(3).Infof("Pod %s/%s deleted, checking for warm pool VMI to return", pod.Namespace, pod.Name)
 
 	// Try to find the VMI for this pod
@@ -364,8 +374,6 @@ func (ctrl *MaroonedPodsGateController) execute(key string) (error, enqueueState
 		return nil, BackOff
 	}
 	if !exists {
-		// nothing we need to do. It should always be possible to re-create this type of controller
-		// c.expectations.DeleteExpectations(key)
 		return nil, BackOff
 	}
 	pod := obj.(*v1.Pod)
@@ -378,12 +386,20 @@ func (ctrl *MaroonedPodsGateController) execute(key string) (error, enqueueState
 		return err, BackOff
 	}
 
-	// Handle pod deletion with finalizer
+	// Check for group mode
+	if groupName, ok := pod.Labels[util.GroupLabel]; ok && groupName != "" {
+		if pod.DeletionTimestamp != nil {
+			return ctrl.handleGroupPodDeletion(pod, podKey, groupName)
+		}
+		return ctrl.executeGroup(pod, groupName)
+	}
+
+	// Handle pod deletion with finalizer (1:1 mode)
 	if pod.DeletionTimestamp != nil {
 		return ctrl.handlePodDeletion(pod, podKey)
 	}
 
-	// Try to find an existing Virtual Machine Instance
+	// 1:1 mode: find existing Virtual Machine Instance
 	var vmi *virtv1.VirtualMachineInstance
 	vmiObj, exist, err := ctrl.vmiInformer.GetStore().GetByKey(podKey)
 	if err != nil {
@@ -396,16 +412,6 @@ func (ctrl *MaroonedPodsGateController) execute(key string) (error, enqueueState
 	} else {
 		vmi = vmiObj.(*virtv1.VirtualMachineInstance)
 	}
-	/*
-		// We will need to handle VMI ownerships, but that's later.
-		else {
-			vmi = vmiObj.(*virtv1.VirtualMachineInstance)
-
-			vmi, err = cm.ClaimVirtualMachineInstanceByName(vmi)
-			if err != nil {
-				return err
-			}
-		}*/
 
 	err1 := ctrl.sync(pod, vmi, key)
 	if err1 != nil {
@@ -418,15 +424,27 @@ func (ctrl *MaroonedPodsGateController) execute(key string) (error, enqueueState
 
 // updatePodNodeSelector updates the pod's nodeSelector to point to a specific node
 func (ctrl *MaroonedPodsGateController) updatePodNodeSelector(pod *v1.Pod, nodeName string) error {
-	podCopy := pod.DeepCopy()
-	if podCopy.Spec.NodeSelector == nil {
-		podCopy.Spec.NodeSelector = make(map[string]string)
+	// Use strategic merge patch to avoid triggering OCP SCC re-validation
+	patch := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"nodeSelector": map[string]string{
+				"kubernetes.io/hostname": nodeName,
+			},
+		},
 	}
-	podCopy.Spec.NodeSelector["kubernetes.io/hostname"] = nodeName
-
-	_, err := ctrl.maroonedpodsCli.CoreV1().Pods(podCopy.Namespace).Update(context.Background(), podCopy, k8smetav1.UpdateOptions{})
+	patchBytes, err := json.Marshal(patch)
 	if err != nil {
-		return fmt.Errorf("failed to update pod nodeSelector: %v", err)
+		return fmt.Errorf("failed to marshal nodeSelector patch: %v", err)
+	}
+	_, err = ctrl.maroonedpodsCli.CoreV1().Pods(pod.Namespace).Patch(
+		context.Background(),
+		pod.Name,
+		k8stypes.StrategicMergePatchType,
+		patchBytes,
+		k8smetav1.PatchOptions{},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to patch pod nodeSelector: %v", err)
 	}
 
 	klog.Infof("Updated pod %s/%s nodeSelector to node %s", pod.Namespace, pod.Name, nodeName)
@@ -473,17 +491,29 @@ func (ctrl *MaroonedPodsGateController) handlePodDeletion(pod *v1.Pod, key strin
 		klog.V(3).Infof("No VMI found for pod %s, skipping VMI deletion", key)
 	}
 
-	// Remove our finalizer
-	podCopy := pod.DeepCopy()
+	// Remove our finalizer using merge patch to avoid SCC re-validation
 	newFinalizers := []string{}
-	for _, f := range podCopy.Finalizers {
+	for _, f := range pod.Finalizers {
 		if f != util.MaroonedPodsFinalizer {
 			newFinalizers = append(newFinalizers, f)
 		}
 	}
-	podCopy.Finalizers = newFinalizers
-
-	_, err = ctrl.maroonedpodsCli.CoreV1().Pods(podCopy.Namespace).Update(context.Background(), podCopy, k8smetav1.UpdateOptions{})
+	finalizerPatch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"finalizers": newFinalizers,
+		},
+	}
+	finalizerPatchBytes, err := json.Marshal(finalizerPatch)
+	if err != nil {
+		return fmt.Errorf("failed to marshal finalizer patch: %v", err), BackOff
+	}
+	_, err = ctrl.maroonedpodsCli.CoreV1().Pods(pod.Namespace).Patch(
+		context.Background(),
+		pod.Name,
+		k8stypes.MergePatchType,
+		finalizerPatchBytes,
+		k8smetav1.PatchOptions{},
+	)
 	if err != nil {
 		klog.Errorf("Failed to remove finalizer from pod %s/%s: %v", pod.Namespace, pod.Name, err)
 		return err, BackOff
@@ -503,10 +533,27 @@ func (ctrl *MaroonedPodsGateController) releasePod(key string) error {
 	if !exists {
 		return nil
 	}
-	pod := obj.(*v1.Pod).DeepCopy()
+	pod := obj.(*v1.Pod)
 	if pod.Spec.SchedulingGates != nil && len(pod.Spec.SchedulingGates) == 1 && pod.Spec.SchedulingGates[0].Name == util.MaroonedPodsGate {
-		pod.Spec.SchedulingGates = []v1.PodSchedulingGate{}
-		_, err = ctrl.maroonedpodsCli.CoreV1().Pods(pod.Namespace).Update(context.Background(), pod, k8smetav1.UpdateOptions{})
+		// Use PATCH instead of UPDATE to avoid triggering OCP SCC re-validation
+		patchOps := []map[string]interface{}{
+			{
+				"op":    "replace",
+				"path":  "/spec/schedulingGates",
+				"value": []interface{}{},
+			},
+		}
+		patchBytes, err := json.Marshal(patchOps)
+		if err != nil {
+			return fmt.Errorf("failed to marshal patch: %v", err)
+		}
+		_, err = ctrl.maroonedpodsCli.CoreV1().Pods(pod.Namespace).Patch(
+			context.Background(),
+			pod.Name,
+			k8stypes.JSONPatchType,
+			patchBytes,
+			k8smetav1.PatchOptions{},
+		)
 		if err != nil {
 			return err
 		}
@@ -620,6 +667,9 @@ func (ctrl *MaroonedPodsGateController) Run(ctx context.Context, threadiness int
 
 	// Start warm pool reconciler
 	go wait.Until(ctrl.reconcileWarmPool, 30*time.Second, ctrl.stop)
+
+	// Start group pool reconciler (cleans up stale groups with no remaining pods)
+	go wait.Until(ctrl.reconcileGroupPools, 60*time.Second, ctrl.stop)
 
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(ctrl.runWorker, time.Second, ctrl.stop)
@@ -1195,4 +1245,542 @@ echo "MaroonedPods cloud-init complete"
 		pod.Namespace, pod.Name, nodeImage, vmi.Spec.Domain.CPU.Cores, guestMemory.String())
 
 	return vmi
+}
+
+// --- Group Mode ---
+
+func (ctrl *MaroonedPodsGateController) executeGroup(pod *v1.Pod, groupName string) (error, enqueueState) {
+	if pod.Spec.SchedulingGates == nil || len(pod.Spec.SchedulingGates) == 0 {
+		return nil, Forget
+	}
+	hasGate := false
+	for _, g := range pod.Spec.SchedulingGates {
+		if g.Name == util.MaroonedPodsGate {
+			hasGate = true
+			break
+		}
+	}
+	if !hasGate {
+		return nil, Forget
+	}
+
+	// Look up existing VMI for this group
+	groupVMI := ctrl.getGroupVMI(groupName)
+
+	if groupVMI == nil {
+		// No VMI for this group yet — create one
+		klog.Infof("No VMI found for group %s, creating one", groupName)
+		_, err := ctrl.createGroupVMI(groupName, pod.Namespace)
+		if err != nil {
+			klog.Errorf("Failed to create group VMI for %s: %v", groupName, err)
+			return err, BackOff
+		}
+		return fmt.Errorf("waiting for group %s VMI to start", groupName), BackOff
+	}
+
+	if groupVMI.Status.Phase != virtv1.Running {
+		klog.V(2).Infof("Group %s VMI %s not yet Running (phase: %s)", groupName, groupVMI.Name, string(groupVMI.Status.Phase))
+		return fmt.Errorf("waiting for group %s VMI to become Running", groupName), BackOff
+	}
+
+	// VMI is Running — check if node has joined
+	_, nodeExists, err := ctrl.nodeInformer.GetStore().GetByKey(groupVMI.Name)
+	if err != nil {
+		return err, BackOff
+	}
+	if !nodeExists {
+		klog.V(2).Infof("Waiting for node %s to register for group %s", groupVMI.Name, groupName)
+		return fmt.Errorf("waiting for node %s to register for group %s", groupVMI.Name, groupName), BackOff
+	}
+
+	// Node is ready — ensure it has group labels/taints and blocking taints are removed
+	err = ctrl.markGroupVMIReady(groupVMI, groupName)
+	if err != nil {
+		klog.Errorf("Failed to mark group VMI %s as ready: %v", groupVMI.Name, err)
+		return err, BackOff
+	}
+
+	// Ungate the pod
+	key, _ := KeyFunc(pod)
+	err = ctrl.releasePod(key)
+	if err != nil {
+		return err, BackOff
+	}
+
+	ctrl.recorder.Eventf(pod, v1.EventTypeNormal, "GroupNodeReady",
+		"Group %s node %s is ready, pod released for scheduling", groupName, groupVMI.Name)
+	return nil, Forget
+}
+
+func (ctrl *MaroonedPodsGateController) getGroupVMI(groupName string) *virtv1.VirtualMachineInstance {
+	vmis := ctrl.vmiInformer.GetStore().List()
+	for _, obj := range vmis {
+		vmi := obj.(*virtv1.VirtualMachineInstance)
+		if vmi.Labels == nil {
+			continue
+		}
+		if g, ok := vmi.Labels[util.GroupLabel]; ok && g == groupName {
+			return vmi
+		}
+	}
+	return nil
+}
+
+func (ctrl *MaroonedPodsGateController) getGroupVMResourcesFromConfig() (cpuCores uint32, memoryMi uint64, nodeImage string, taintKey string) {
+	cpuCores = 4
+	memoryMi = 8192
+	nodeImage = "quay.io/capk/ubuntu-2004-container-disk:v1.26.0"
+	taintKey = "maroonedpods.io"
+
+	config := ctrl.getConfig()
+	if config == nil {
+		return
+	}
+
+	if config.Spec.GroupBaseVMResources.CPU > 0 {
+		cpuCores = config.Spec.GroupBaseVMResources.CPU
+	} else if config.Spec.BaseVMResources.CPU > 0 {
+		cpuCores = config.Spec.BaseVMResources.CPU
+	}
+
+	if config.Spec.GroupBaseVMResources.MemoryMi > 0 {
+		memoryMi = config.Spec.GroupBaseVMResources.MemoryMi
+	} else if config.Spec.BaseVMResources.MemoryMi > 0 {
+		memoryMi = config.Spec.BaseVMResources.MemoryMi
+	}
+
+	if config.Spec.GroupNodeImage != "" {
+		nodeImage = config.Spec.GroupNodeImage
+	} else if config.Spec.NodeImage != "" {
+		nodeImage = config.Spec.NodeImage
+	}
+
+	if config.Spec.NodeTaintKey != "" {
+		taintKey = config.Spec.NodeTaintKey
+	}
+
+	return
+}
+
+func sanitizeGroupName(groupName string) string {
+	safe := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		if r >= 'A' && r <= 'Z' {
+			return r + 32 // lowercase
+		}
+		return '-'
+	}, groupName)
+	if len(safe) > 40 {
+		safe = safe[:40]
+	}
+	return strings.Trim(safe, "-")
+}
+
+// ensureIgnitionSecret copies the Ignition Secret from the maroonedpods namespace to the target namespace
+// and returns the Secret name in the target namespace.
+// Returns the Secret name and whether Ignition is configured.
+func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace string) (string, bool) {
+	config := ctrl.getConfig()
+	if config == nil || config.Spec.JoinConfig.IgnitionSecretRef == "" {
+		return "", false
+	}
+
+	secretName := config.Spec.JoinConfig.IgnitionSecretRef
+	srcSecret, err := ctrl.maroonedpodsCli.CoreV1().Secrets(util.DefaultMaroonedPodsNs).Get(
+		context.Background(), secretName, k8smetav1.GetOptions{})
+	if err != nil {
+		klog.Errorf("Failed to get Ignition secret %s/%s: %v", util.DefaultMaroonedPodsNs, secretName, err)
+		return "", false
+	}
+
+	if _, ok := srcSecret.Data["userData"]; !ok {
+		klog.Errorf("Ignition secret %s/%s has no 'userData' key", util.DefaultMaroonedPodsNs, secretName)
+		return "", false
+	}
+
+	targetSecretName := "maroonedpods-ignition"
+	targetSecret := &v1.Secret{
+		ObjectMeta: k8smetav1.ObjectMeta{
+			Name:      targetSecretName,
+			Namespace: targetNamespace,
+		},
+		Data: srcSecret.Data,
+	}
+
+	existing, err := ctrl.maroonedpodsCli.CoreV1().Secrets(targetNamespace).Get(
+		context.Background(), targetSecretName, k8smetav1.GetOptions{})
+	if err != nil {
+		_, err = ctrl.maroonedpodsCli.CoreV1().Secrets(targetNamespace).Create(
+			context.Background(), targetSecret, k8smetav1.CreateOptions{})
+		if err != nil {
+			klog.Errorf("Failed to create Ignition secret in %s: %v", targetNamespace, err)
+			return "", false
+		}
+		klog.Infof("Created Ignition secret %s/%s", targetNamespace, targetSecretName)
+	} else {
+		existing.Data = srcSecret.Data
+		_, err = ctrl.maroonedpodsCli.CoreV1().Secrets(targetNamespace).Update(
+			context.Background(), existing, k8smetav1.UpdateOptions{})
+		if err != nil {
+			klog.Errorf("Failed to update Ignition secret in %s: %v", targetNamespace, err)
+			return "", false
+		}
+	}
+
+	return targetSecretName, true
+}
+
+func (ctrl *MaroonedPodsGateController) createGroupVMI(groupName string, namespace string) (*virtv1.VirtualMachineInstance, error) {
+	cpuCores, memoryMi, nodeImage, _ := ctrl.getGroupVMResourcesFromConfig()
+
+	vmiName := fmt.Sprintf("%s%s", util.GroupVMNamePrefix, sanitizeGroupName(groupName))
+	klog.Infof("Creating group VMI %s for group %s in namespace %s", vmiName, groupName, namespace)
+
+	// Try to get Ignition config first (for OCP)
+	ignitionSecretName, useIgnition := ctrl.ensureIgnitionSecret(namespace)
+
+	var userData string
+	if !useIgnition {
+		// Fall back to legacy kubeadm cloud-init for dev/non-OCP environments
+		userData = fmt.Sprintf(`#!/bin/sh
+
+cat <<EOF >/tmp/kubeadm-join-config.conf
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    unsafeSkipCAVerification: true
+    apiServerEndpoint: "192.168.66.101:6443"
+    token: "abcdef.1234567890123456"
+nodeRegistration:
+  kubeletExtraArgs:
+    node-labels: "%s=%s"
+EOF
+
+kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=all --v=5
+`, util.GroupNodeLabel, groupName)
+		klog.V(2).Infof("Using legacy kubeadm cloud-init for group VMI %s", vmiName)
+	}
+
+	encodedData := base64.StdEncoding.EncodeToString([]byte(userData))
+
+	vmi := virtv1.NewVMIReferenceFromNameWithNS(namespace, vmiName)
+	vmi.Spec = virtv1.VirtualMachineInstanceSpec{Domain: virtv1.DomainSpec{}}
+	vmi.TypeMeta = k8smetav1.TypeMeta{
+		APIVersion: virtv1.GroupVersion.String(),
+		Kind:       "VirtualMachineInstance",
+	}
+
+	vmi.Labels = map[string]string{
+		util.GroupLabel:          groupName,
+		util.GroupPoolStateLabel: util.GroupPoolStateCreating,
+	}
+
+	bridgeBinding := virtv1.Interface{
+		Name: virtv1.DefaultPodNetwork().Name,
+		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
+			Masquerade: &virtv1.InterfaceMasquerade{},
+		},
+	}
+	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeBinding)
+	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
+
+	guestMemory := resource.MustParse(fmt.Sprintf("%dMi", memoryMi))
+	vmi.Spec.Domain.Memory = &virtv1.Memory{Guest: &guestMemory}
+	vmi.Spec.Domain.CPU = &virtv1.CPU{
+		Threads: 1,
+		Sockets: 1,
+		Cores:   cpuCores,
+	}
+
+	vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
+		virtv1.Disk{
+			Name: "containerdisk",
+			DiskDevice: virtv1.DiskDevice{
+				Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}})
+	vmi.Spec.Volumes = append(vmi.Spec.Volumes,
+		virtv1.Volume{
+			Name: "containerdisk",
+			VolumeSource: virtv1.VolumeSource{
+				ContainerDisk: &virtv1.ContainerDiskSource{
+					Image: nodeImage},
+			}},
+	)
+
+	vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
+		virtv1.Disk{
+			Name: "cloudinitdisk",
+			DiskDevice: virtv1.DiskDevice{
+				Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}})
+
+	if useIgnition {
+		vmi.Spec.Volumes = append(vmi.Spec.Volumes,
+			virtv1.Volume{
+				Name: "cloudinitdisk",
+				VolumeSource: virtv1.VolumeSource{
+					CloudInitConfigDrive: &virtv1.CloudInitConfigDriveSource{
+						UserDataSecretRef: &v1.LocalObjectReference{
+							Name: ignitionSecretName,
+						},
+					},
+				}},
+		)
+	} else {
+		vmi.Spec.Volumes = append(vmi.Spec.Volumes,
+			virtv1.Volume{
+				Name: "cloudinitdisk",
+				VolumeSource: virtv1.VolumeSource{
+					CloudInitNoCloud: &virtv1.CloudInitNoCloudSource{
+						UserData:       "",
+						UserDataBase64: encodedData,
+					},
+				}},
+		)
+	}
+
+	createdVMI, err := ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(namespace).Create(
+		context.Background(), vmi, k8smetav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create group VMI: %v", err)
+	}
+
+	klog.Infof("Created group VMI %s/%s for group %s", createdVMI.Namespace, createdVMI.Name, groupName)
+	return createdVMI, nil
+}
+
+func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMachineInstance, groupName string) error {
+	klog.Infof("Marking group VMI %s/%s as ready for group %s", vmi.Namespace, vmi.Name, groupName)
+
+	vmiCopy := vmi.DeepCopy()
+	vmiCopy.Labels[util.GroupPoolStateLabel] = util.GroupPoolStateReady
+
+	_, err := ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(vmiCopy.Namespace).Update(
+		context.Background(), vmiCopy, k8smetav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to mark group VMI as ready: %v", err)
+	}
+
+	// Label and taint the node for group scheduling
+	nodeName := vmi.Name
+	nodeObj, exists, err := ctrl.nodeInformer.GetStore().GetByKey(nodeName)
+	if err != nil || !exists {
+		return fmt.Errorf("node %s not found for group VMI", nodeName)
+	}
+
+	node := nodeObj.(*v1.Node).DeepCopy()
+	if node.Labels == nil {
+		node.Labels = make(map[string]string)
+	}
+	node.Labels[util.GroupNodeLabel] = groupName
+
+	// Remove blocking taints and add group taint
+	taintsToRemove := map[string]bool{
+		"node.cloudprovider.kubernetes.io/uninitialized": true,
+		"UpdateInProgress": true,
+	}
+
+	cleanedTaints := []v1.Taint{}
+	for _, t := range node.Spec.Taints {
+		if taintsToRemove[t.Key] {
+			klog.Infof("Removing blocking taint %s from node %s", t.Key, nodeName)
+		} else {
+			cleanedTaints = append(cleanedTaints, t)
+		}
+	}
+	node.Spec.Taints = cleanedTaints
+
+	// Add group taint so only group pods can schedule here
+	hasTaint := false
+	for _, t := range node.Spec.Taints {
+		if t.Key == util.GroupLabel && t.Value == groupName {
+			hasTaint = true
+			break
+		}
+	}
+	if !hasTaint {
+		node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
+			Key:    util.GroupLabel,
+			Value:  groupName,
+			Effect: v1.TaintEffectNoSchedule,
+		})
+	}
+
+	_, err = ctrl.maroonedpodsCli.CoreV1().Nodes().Update(context.Background(), node, k8smetav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to label/taint node %s for group %s: %v", nodeName, groupName, err)
+	}
+
+	ctrl.updateGroupPoolStatus(groupName, util.GroupPoolStateReady, vmi.Name, nodeName)
+	klog.Infof("Node %s labeled and tainted for group %s", nodeName, groupName)
+	return nil
+}
+
+func (ctrl *MaroonedPodsGateController) handleGroupPodDeletion(pod *v1.Pod, key string, groupName string) (error, enqueueState) {
+	hasFinalizer := false
+	for _, f := range pod.Finalizers {
+		if f == util.MaroonedPodsFinalizer {
+			hasFinalizer = true
+			break
+		}
+	}
+
+	if !hasFinalizer {
+		return nil, Forget
+	}
+
+	klog.Infof("Group pod %s/%s being deleted (group: %s)", pod.Namespace, pod.Name, groupName)
+
+	remaining := ctrl.countGroupPods(groupName, pod.Name)
+	if remaining == 0 {
+		klog.Infof("Last pod in group %s deleted, cleaning up group VM", groupName)
+		ctrl.cleanupGroupVM(groupName)
+	} else {
+		klog.V(3).Infof("Group %s still has %d pods, keeping VM alive", groupName, remaining)
+	}
+
+	// Remove finalizer using merge patch to avoid SCC re-validation
+	cleanFinalizers := []string{}
+	for _, f := range pod.Finalizers {
+		if f != util.MaroonedPodsFinalizer {
+			cleanFinalizers = append(cleanFinalizers, f)
+		}
+	}
+	cleanPatch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"finalizers": cleanFinalizers,
+		},
+	}
+	cleanPatchBytes, err := json.Marshal(cleanPatch)
+	if err != nil {
+		return fmt.Errorf("failed to marshal finalizer patch: %v", err), BackOff
+	}
+	_, err = ctrl.maroonedpodsCli.CoreV1().Pods(pod.Namespace).Patch(
+		context.Background(),
+		pod.Name,
+		k8stypes.MergePatchType,
+		cleanPatchBytes,
+		k8smetav1.PatchOptions{},
+	)
+	if err != nil {
+		return err, BackOff
+	}
+
+	return nil, Forget
+}
+
+func (ctrl *MaroonedPodsGateController) countGroupPods(groupName string, excludePodName string) int {
+	pods := ctrl.podInformer.GetStore().List()
+	count := 0
+	for _, obj := range pods {
+		pod := obj.(*v1.Pod)
+		if pod.Name == excludePodName {
+			continue
+		}
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if g, ok := pod.Labels[util.GroupLabel]; ok && g == groupName {
+			count++
+		}
+	}
+	return count
+}
+
+func (ctrl *MaroonedPodsGateController) cleanupGroupVM(groupName string) {
+	vmis := ctrl.vmiInformer.GetStore().List()
+	for _, obj := range vmis {
+		vmi := obj.(*virtv1.VirtualMachineInstance)
+		if vmi.Labels == nil {
+			continue
+		}
+		if g, ok := vmi.Labels[util.GroupLabel]; ok && g == groupName {
+			klog.Infof("Deleting group VMI %s/%s (group %s cleanup)", vmi.Namespace, vmi.Name, groupName)
+			err := ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(vmi.Namespace).Delete(
+				context.Background(), vmi.Name, k8smetav1.DeleteOptions{})
+			if err != nil {
+				klog.Errorf("Failed to delete group VMI %s: %v", vmi.Name, err)
+			}
+		}
+	}
+
+	ctrl.removeGroupPoolStatus(groupName)
+}
+
+func (ctrl *MaroonedPodsGateController) updateGroupPoolStatus(groupName, state, vmiName, nodeName string) {
+	config := ctrl.getConfig()
+	if config == nil {
+		return
+	}
+
+	configCopy := config.DeepCopy()
+	if configCopy.Status.GroupPools == nil {
+		configCopy.Status.GroupPools = make(map[string]v1alpha1.GroupPoolStatus)
+	}
+
+	configCopy.Status.GroupPools[groupName] = v1alpha1.GroupPoolStatus{
+		State:    state,
+		VMIName:  vmiName,
+		NodeName: nodeName,
+	}
+
+	_, err := ctrl.maroonedpodsCli.RestClient().Put().
+		Resource("maroonedpodsconfigs").
+		Name(configCopy.Name).
+		SubResource("status").
+		Body(configCopy).
+		Do(context.Background()).
+		Get()
+	if err != nil {
+		klog.V(3).Infof("Failed to update group pool status for %s: %v", groupName, err)
+	}
+}
+
+func (ctrl *MaroonedPodsGateController) removeGroupPoolStatus(groupName string) {
+	config := ctrl.getConfig()
+	if config == nil {
+		return
+	}
+
+	configCopy := config.DeepCopy()
+	if configCopy.Status.GroupPools == nil {
+		return
+	}
+
+	delete(configCopy.Status.GroupPools, groupName)
+
+	_, err := ctrl.maroonedpodsCli.RestClient().Put().
+		Resource("maroonedpodsconfigs").
+		Name(configCopy.Name).
+		SubResource("status").
+		Body(configCopy).
+		Do(context.Background()).
+		Get()
+	if err != nil {
+		klog.V(3).Infof("Failed to remove group pool status for %s: %v", groupName, err)
+	}
+}
+
+func (ctrl *MaroonedPodsGateController) reconcileGroupPools() {
+	// Find all active groups from VMIs
+	groupNames := make(map[string]bool)
+	vmis := ctrl.vmiInformer.GetStore().List()
+	for _, obj := range vmis {
+		vmi := obj.(*virtv1.VirtualMachineInstance)
+		if vmi.Labels == nil {
+			continue
+		}
+		if g, ok := vmi.Labels[util.GroupLabel]; ok {
+			groupNames[g] = true
+		}
+	}
+
+	for groupName := range groupNames {
+		podCount := ctrl.countGroupPods(groupName, "")
+		if podCount == 0 {
+			klog.Infof("Group %s has no pods, cleaning up stale VM", groupName)
+			ctrl.cleanupGroupVM(groupName)
+		}
+	}
 }
