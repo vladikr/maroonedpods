@@ -87,6 +87,46 @@ func NewMaroonedPodsGateController(maroonedpodsCli client.MaroonedPodsClient,
 
 	}
 
+	// Register node event handlers to re-enqueue pods when nodes become Ready
+	_, err = ctrl.nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			node := obj.(*v1.Node)
+			klog.V(2).Infof("Node %s added, re-enqueueing waiting pods", node.Name)
+			ctrl.enqueuePodsForNode(node.Name)
+		},
+		UpdateFunc: func(old, cur interface{}) {
+			oldNode := old.(*v1.Node)
+			curNode := cur.(*v1.Node)
+
+			// Check if node transitioned to Ready
+			oldReady := false
+			curReady := false
+
+			for _, cond := range oldNode.Status.Conditions {
+				if cond.Type == v1.NodeReady && cond.Status == v1.ConditionTrue {
+					oldReady = true
+					break
+				}
+			}
+
+			for _, cond := range curNode.Status.Conditions {
+				if cond.Type == v1.NodeReady && cond.Status == v1.ConditionTrue {
+					curReady = true
+					break
+				}
+			}
+
+			// If node transitioned from not-Ready to Ready, re-enqueue waiting pods
+			if !oldReady && curReady {
+				klog.Infof("Node %s became Ready, re-enqueueing waiting pods", curNode.Name)
+				ctrl.enqueuePodsForNode(curNode.Name)
+			}
+		},
+	})
+	if err != nil {
+		panic("failed to register node event handler")
+	}
+
 	return &ctrl
 }
 
@@ -159,6 +199,48 @@ func (ctrl *MaroonedPodsGateController) podResourcesChanged(oldPod, newPod *v1.P
 	}
 
 	return false
+}
+
+// enqueuePodsForNode re-enqueues all gated pods that are waiting for the given node
+func (ctrl *MaroonedPodsGateController) enqueuePodsForNode(nodeName string) {
+	pods := ctrl.podInformer.GetStore().List()
+	for _, obj := range pods {
+		pod := obj.(*v1.Pod)
+
+		// Only process pods that still have the scheduling gate
+		if pod.Spec.SchedulingGates == nil ||
+			len(pod.Spec.SchedulingGates) != 1 ||
+			pod.Spec.SchedulingGates[0].Name != util.MaroonedPodsGate {
+			continue
+		}
+
+		// Check if this pod is waiting for this node
+		shouldEnqueue := false
+
+		// Group mode: check if pod's group label matches node name pattern
+		if groupName, ok := pod.Labels[util.GroupLabel]; ok {
+			expectedNodeName := fmt.Sprintf("maroonedpods-group-%s", groupName)
+			if expectedNodeName == nodeName {
+				shouldEnqueue = true
+			}
+		} else if maroon, ok := pod.Labels[util.MaroonedPodLabel]; ok && maroon == "true" {
+			// 1:1 mode: VMI name matches node name
+			// For 1:1 mode, we'd need to look up the VMI for this pod to get its name
+			// For now, we'll rely on the existing backoff mechanism for 1:1 mode
+			// since group mode is the priority
+			_ = maroon // avoid unused variable warning
+		}
+
+		if shouldEnqueue {
+			key, err := KeyFunc(pod)
+			if err != nil {
+				klog.Errorf("Failed to get key for pod %s/%s: %v", pod.Namespace, pod.Name, err)
+				continue
+			}
+			klog.V(2).Infof("Re-enqueueing pod %s because node %s became available", key, nodeName)
+			ctrl.queue.Add(key)
+		}
+	}
 }
 
 func (ctrl *MaroonedPodsGateController) deletePod(obj interface{}) {
