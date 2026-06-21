@@ -89,6 +89,17 @@ const (
 	PoolStateAvailable = "available"
 	PoolStateClaimed   = "claimed"
 	PoolStateCreating  = "creating"
+
+	// Group mode labels
+	GroupLabel             = "maroonedpods.io/group"
+	HypershiftClusterLabel = "hypershift.openshift.io/cluster"
+	GroupPoolStateLabel    = "maroonedpods.io/group-pool-state"
+	GroupVMNamePrefix      = "maroonedpods-group-"
+	GroupNodeLabel         = "maroonedpods.io/group-node"
+
+	// Group pool states
+	GroupPoolStateCreating = "creating"
+	GroupPoolStateReady    = "ready"
 )
 
 var commonLabels = map[string]string{

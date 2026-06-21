@@ -41,6 +41,9 @@ func (v Handler) Handle() (*admissionv1.AdmissionReview, error) {
 			return nil, err
 		}
 		if _, exist := pod.Labels["maroonedpods.io/maroon"]; exist {
+			if groupName := v.getGroupName(&pod); groupName != "" {
+				return v.mutateGroupPod(&pod, groupName)
+			}
 			return v.mutatePod(&pod)
 		}
 		return reviewResponse(v.request.UID, true, http.StatusAccepted, allowPodRequest), nil
@@ -77,6 +80,55 @@ func (v Handler) mutatePod(pod *v1.Pod) (*admissionv1.AdmissionReview, error) {
 	}
 
 	patch := fmt.Sprintf(`[{"op": "add", "path": "/metadata/finalizers", "value": %s}, {"op": "add", "path": "/spec/schedulingGates", "value": %s}, {"op": "add", "path": "/spec/tolerations/-", "value": {"key": "%s.maroonedpods.io", "operator":"Exists", "effect": "NoSchedule"}}, {"op": "add", "path": "/spec/nodeSelector", "value": {"kubernetes.io/hostname": "%s"}}]`, string(finalizersBytes), string(schedulingGatesBytes), pod.Name, pod.Name)
+	return reviewResponseWithPatch(v.request.UID, true, http.StatusAccepted, allowPodRequest, []byte(patch)), nil
+}
+
+func (v Handler) getGroupName(pod *v1.Pod) string {
+	if group, ok := pod.Labels[util.GroupLabel]; ok && group != "" {
+		return group
+	}
+	if cluster, ok := pod.Labels[util.HypershiftClusterLabel]; ok && cluster != "" {
+		return cluster
+	}
+	return ""
+}
+
+func (v Handler) mutateGroupPod(pod *v1.Pod, groupName string) (*admissionv1.AdmissionReview, error) {
+	schedulingGates := pod.Spec.SchedulingGates
+	if schedulingGates == nil {
+		schedulingGates = []v1.PodSchedulingGate{}
+	}
+	schedulingGates = append(schedulingGates, v1.PodSchedulingGate{Name: util.MaroonedPodsGate})
+
+	schedulingGatesBytes, err := json.Marshal(schedulingGates)
+	if err != nil {
+		return nil, err
+	}
+
+	finalizers := pod.Finalizers
+	if finalizers == nil {
+		finalizers = []string{}
+	}
+	finalizers = append(finalizers, util.MaroonedPodsFinalizer)
+
+	finalizersBytes, err := json.Marshal(finalizers)
+	if err != nil {
+		return nil, err
+	}
+
+	var patchOps []string
+
+	patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/metadata/finalizers", "value": %s}`, string(finalizersBytes)))
+	patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/spec/schedulingGates", "value": %s}`, string(schedulingGatesBytes)))
+	patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/spec/tolerations/-", "value": {"key": "%s", "operator": "Equal", "value": "%s", "effect": "NoSchedule"}}`, util.GroupLabel, groupName))
+	patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/spec/nodeSelector", "value": {"%s": "%s"}}`, util.GroupNodeLabel, groupName))
+
+	if _, hasGroupLabel := pod.Labels[util.GroupLabel]; !hasGroupLabel {
+		patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/metadata/labels/%s", "value": "%s"}`,
+			strings.ReplaceAll(util.GroupLabel, "/", "~1"), groupName))
+	}
+
+	patch := "[" + strings.Join(patchOps, ", ") + "]"
 	return reviewResponseWithPatch(v.request.UID, true, http.StatusAccepted, allowPodRequest, []byte(patch)), nil
 }
 
