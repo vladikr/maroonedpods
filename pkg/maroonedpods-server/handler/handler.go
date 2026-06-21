@@ -40,6 +40,10 @@ func (v Handler) Handle() (*admissionv1.AdmissionReview, error) {
 		if err := json.Unmarshal(v.request.Object.Raw, &pod); err != nil {
 			return nil, err
 		}
+		// Check for HyperShift cluster label first — auto-intercept HyperShift CP pods
+		if clusterName, exist := pod.Labels[util.HypershiftClusterLabel]; exist && clusterName != "" {
+			return v.mutateGroupPod(&pod, clusterName)
+		}
 		if _, exist := pod.Labels["maroonedpods.io/maroon"]; exist {
 			if groupName := v.getGroupName(&pod); groupName != "" {
 				return v.mutateGroupPod(&pod, groupName)

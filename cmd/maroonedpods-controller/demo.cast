@@ -1,0 +1,2 @@
+{"version": 2, "width": 80, "height": 24, "timestamp": 1782005240, "env": {"SHELL": "/bin/bash", "TERM": "tmux-256color"}}
+[0.003035, "o", "sh: line 1: ./demo/group-mode-demo.sh: No such file or directory\r\n"]

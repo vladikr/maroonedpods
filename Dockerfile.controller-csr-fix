@@ -1,0 +1,5 @@
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+WORKDIR /
+COPY maroonedpods_controller /maroonedpods-controller
+USER 1001
+ENTRYPOINT ["/maroonedpods-controller"]
