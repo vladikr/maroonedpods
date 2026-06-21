@@ -91,11 +91,12 @@ const (
 	PoolStateCreating  = "creating"
 
 	// Group mode labels
-	GroupLabel             = "maroonedpods.io/group"
-	HypershiftClusterLabel = "hypershift.openshift.io/cluster"
-	GroupPoolStateLabel    = "maroonedpods.io/group-pool-state"
-	GroupVMNamePrefix      = "maroonedpods-group-"
-	GroupNodeLabel         = "maroonedpods.io/group-node"
+	GroupLabel                    = "maroonedpods.io/group"
+	HypershiftClusterLabel        = "hypershift.openshift.io/cluster"
+	HypershiftHostedControlPlane  = "hypershift.openshift.io/hosted-control-plane"
+	GroupPoolStateLabel           = "maroonedpods.io/group-pool-state"
+	GroupVMNamePrefix             = "maroonedpods-group-"
+	GroupNodeLabel                = "maroonedpods.io/group-node"
 
 	// Group pool states
 	GroupPoolStateCreating = "creating"

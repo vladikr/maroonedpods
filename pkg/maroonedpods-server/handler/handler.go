@@ -40,9 +40,13 @@ func (v Handler) Handle() (*admissionv1.AdmissionReview, error) {
 		if err := json.Unmarshal(v.request.Object.Raw, &pod); err != nil {
 			return nil, err
 		}
-		// Check for HyperShift cluster label first — auto-intercept HyperShift CP pods
+		// Check for HyperShift labels first — auto-intercept HyperShift CP pods
 		if clusterName, exist := pod.Labels[util.HypershiftClusterLabel]; exist && clusterName != "" {
 			return v.mutateGroupPod(&pod, clusterName)
+		}
+		// Also check for hypershift.openshift.io/hosted-control-plane (actual label used by HyperShift)
+		if hostedCP, exist := pod.Labels[util.HypershiftHostedControlPlane]; exist && hostedCP != "" {
+			return v.mutateGroupPod(&pod, hostedCP)
 		}
 		if _, exist := pod.Labels["maroonedpods.io/maroon"]; exist {
 			if groupName := v.getGroupName(&pod); groupName != "" {
@@ -93,6 +97,9 @@ func (v Handler) getGroupName(pod *v1.Pod) string {
 	}
 	if cluster, ok := pod.Labels[util.HypershiftClusterLabel]; ok && cluster != "" {
 		return cluster
+	}
+	if hostedCP, ok := pod.Labels[util.HypershiftHostedControlPlane]; ok && hostedCP != "" {
+		return hostedCP
 	}
 	return ""
 }
