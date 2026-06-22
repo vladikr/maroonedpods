@@ -91,7 +91,8 @@ func createGatingMutatingWebhook(namespace string, c client.Client, l logr.Logge
 	defaultServicePort := int32(443)
 	namespacedScope := admissionregistrationv1.NamespacedScope
 	exactPolicy := admissionregistrationv1.Equivalent
-	failurePolicy := admissionregistrationv1.Fail
+	failurePolicy := admissionregistrationv1.Ignore
+	timeoutSeconds := int32(10)
 	sideEffect := admissionregistrationv1.SideEffectClassNone
 
 	hooks := []admissionregistrationv1.MutatingWebhook{}
@@ -101,6 +102,7 @@ func createGatingMutatingWebhook(namespace string, c client.Client, l logr.Logge
 				Name:                    "gater.maroonedpods.io",
 				AdmissionReviewVersions: []string{"v1", "v1beta1"},
 				FailurePolicy:           &failurePolicy,
+				TimeoutSeconds:          &timeoutSeconds,
 				SideEffects:             &sideEffect,
 				MatchPolicy:             &exactPolicy,
 				NamespaceSelector:       cr.Spec.NamespaceSelector,
@@ -172,7 +174,8 @@ func createGatingValidatingWebhook(namespace string, c client.Client, l logr.Log
 	defaultServicePort := int32(443)
 	namespacedScope := admissionregistrationv1.NamespacedScope
 	exactPolicy := admissionregistrationv1.Equivalent
-	failurePolicy := admissionregistrationv1.Fail
+	failurePolicy := admissionregistrationv1.Ignore
+	timeoutSeconds := int32(10)
 	sideEffect := admissionregistrationv1.SideEffectClassNone
 	hooks := []admissionregistrationv1.ValidatingWebhook{}
 	if includeHooks {
@@ -181,6 +184,7 @@ func createGatingValidatingWebhook(namespace string, c client.Client, l logr.Log
 				Name:                    "marooned.pods.validator",
 				AdmissionReviewVersions: []string{"v1", "v1beta1"},
 				FailurePolicy:           &failurePolicy,
+				TimeoutSeconds:          &timeoutSeconds,
 				SideEffects:             &sideEffect,
 				MatchPolicy:             &exactPolicy,
 				Rules: []admissionregistrationv1.RuleWithOperations{
@@ -211,6 +215,7 @@ func createGatingValidatingWebhook(namespace string, c client.Client, l logr.Log
 				Name:                    "remove.pod.gate.validator",
 				AdmissionReviewVersions: []string{"v1", "v1beta1"},
 				FailurePolicy:           &failurePolicy,
+				TimeoutSeconds:          &timeoutSeconds,
 				SideEffects:             &sideEffect,
 				MatchPolicy:             &exactPolicy,
 				NamespaceSelector:       cr.Spec.NamespaceSelector,

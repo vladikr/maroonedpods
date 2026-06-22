@@ -104,14 +104,14 @@ func createCertificateDefinitions() []CertificateDefinition {
 			Configurable: true,
 			SignerSecret: createSecret("maroonedpods-server"),
 			SignerConfig: CertificateConfig{
-				Lifetime: 48 * time.Hour,
-				Refresh:  24 * time.Hour,
+				Lifetime: 90 * 24 * time.Hour,  // 90 days
+				Refresh:  60 * 24 * time.Hour,  // Refresh at 60 days
 			},
 			CertBundleConfigmap: createConfigMap("maroonedpods-server-signer-bundle"),
 			TargetSecret:        createSecret(util.SecretResourceName),
 			TargetConfig: CertificateConfig{
-				Lifetime: 24 * time.Hour,
-				Refresh:  12 * time.Hour,
+				Lifetime: 30 * 24 * time.Hour,  // 30 days
+				Refresh:  20 * 24 * time.Hour,  // Refresh at 20 days
 			},
 			TargetService: &[]string{cluster.MaroonedPodsServerServiceName}[0],
 		},
