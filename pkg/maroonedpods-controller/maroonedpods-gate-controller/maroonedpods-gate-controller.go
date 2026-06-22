@@ -1418,7 +1418,7 @@ func (ctrl *MaroonedPodsGateController) getGroupVMI(groupName string) *virtv1.Vi
 
 func (ctrl *MaroonedPodsGateController) getGroupVMResourcesFromConfig() (cpuCores uint32, memoryMi uint64, nodeImage string, taintKey string) {
 	cpuCores = 4
-	memoryMi = 8192
+	memoryMi = 3072
 	nodeImage = "quay.io/capk/ubuntu-2004-container-disk:v1.26.0"
 	taintKey = "maroonedpods.io"
 
