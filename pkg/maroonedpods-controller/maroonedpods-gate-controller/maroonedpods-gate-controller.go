@@ -1419,7 +1419,7 @@ func (ctrl *MaroonedPodsGateController) getGroupVMI(groupName string) *virtv1.Vi
 func (ctrl *MaroonedPodsGateController) getGroupVMResourcesFromConfig() (cpuCores uint32, memoryMi uint64, nodeImage string, taintKey string) {
 	cpuCores = 4
 	memoryMi = 3072
-	nodeImage = "quay.io/capk/ubuntu-2004-container-disk:v1.26.0"
+	nodeImage = "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:024cb7de8d9e21ef7fc2bcb90f8dd77e7f742d937822c95e4ec72b9ab48fea7d"
 	taintKey = "maroonedpods.io"
 
 	config := ctrl.getConfig()
