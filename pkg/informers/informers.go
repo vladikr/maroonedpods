@@ -31,11 +31,11 @@ func GetPodInformer(maroonedpodsCli client.MaroonedPodsClient) cache.SharedIndex
 }
 
 func GetPodsToMaroonInformer(maroonedpodsCli client.MaroonedPodsClient) cache.SharedIndexInformer {
-	labelSelector, err := labels.Parse("maroonedpods.io/maroon=true")
-	if err != nil {
-		panic(err)
-	}
-	listWatcher := NewListWatchFromClient(maroonedpodsCli.CoreV1().RESTClient(), "pods", metav1.NamespaceAll, fields.Everything(), labelSelector)
+	// Watch all pods - the controller will filter based on scheduling gates and labels
+	// This is necessary because we need to watch pods with maroonedpods.io/maroon=true
+	// AND pods with maroonedpods.io/group labels (for group mode), and label selectors
+	// don't support OR conditions or prefix matching
+	listWatcher := NewListWatchFromClient(maroonedpodsCli.CoreV1().RESTClient(), "pods", metav1.NamespaceAll, fields.Everything(), labels.Everything())
 	return cache.NewSharedIndexInformer(listWatcher, &v1.Pod{}, 1*time.Hour, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 }
 
