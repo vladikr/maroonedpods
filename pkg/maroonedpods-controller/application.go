@@ -61,6 +61,14 @@ type MaroonedPodsControllerApp struct {
 	leaderElector                *leaderelection.LeaderElector
 }
 
+// crdExists checks if a CRD exists in the cluster by trying to list the resource
+func crdExists(mpClient client.MaroonedPodsClient, crdName string) bool {
+	// Try to list the resource - if the CRD doesn't exist, this will fail
+	restClient := mpClient.RestClient()
+	_, err := restClient.Get().AbsPath("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + crdName).DoRaw(context.Background())
+	return err == nil
+}
+
 func Execute() {
 	var err error
 	var app = MaroonedPodsControllerApp{}
@@ -93,7 +101,16 @@ func Execute() {
 	//app.podInformer = informers.GetPodInformer(app.maroonedpodsCli)
 	app.podInformer = informers.GetPodsToMaroonInformer(app.maroonedpodsCli)
 	app.maroonedpodsInformer = informers.GetMaroonedPodsInformer(app.maroonedpodsCli)
-	app.configInformer = informers.GetMaroonedPodsConfigInformer(app.maroonedpodsCli)
+
+	// MaroonedPodsConfig CRD is optional (warm pool feature)
+	// Only create informer if the CRD exists
+	if crdExists(app.maroonedpodsCli, "maroonedpodsconfigs.maroonedpods.io") {
+		app.configInformer = informers.GetMaroonedPodsConfigInformer(app.maroonedpodsCli)
+		klog.V(2).Info("MaroonedPodsConfig CRD found, enabling warm pool support")
+	} else {
+		klog.V(2).Info("MaroonedPodsConfig CRD not found, warm pool features disabled")
+	}
+
 	app.vmiInformer = informers.GetVMIInformer(app.maroonedpodsCli)
 	app.nodeInformer = informers.GetNodesInformer(app.maroonedpodsCli)
 	stop := ctx.Done()
@@ -213,17 +230,24 @@ func (mca *MaroonedPodsControllerApp) onStartedLeading() func(ctx context.Contex
 
 		go mca.podInformer.Run(stop)
 		go mca.maroonedpodsInformer.Run(stop)
-		go mca.configInformer.Run(stop)
+		if mca.configInformer != nil {
+			go mca.configInformer.Run(stop)
+		}
 		go mca.vmiInformer.Run(stop)
 		go mca.nodeInformer.Run(stop)
 
-		if !cache.WaitForCacheSync(stop,
+		// Build list of cache sync functions
+		cacheSyncs := []cache.InformerSynced{
 			mca.podInformer.HasSynced,
 			mca.vmiInformer.HasSynced,
 			mca.nodeInformer.HasSynced,
 			mca.maroonedpodsInformer.HasSynced,
-			mca.configInformer.HasSynced,
-		) {
+		}
+		if mca.configInformer != nil {
+			cacheSyncs = append(cacheSyncs, mca.configInformer.HasSynced)
+		}
+
+		if !cache.WaitForCacheSync(stop, cacheSyncs...) {
 			klog.Warningf("failed to wait for caches to sync")
 		}
 

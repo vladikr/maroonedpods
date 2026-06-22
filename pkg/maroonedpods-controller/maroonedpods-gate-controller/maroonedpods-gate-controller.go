@@ -766,8 +766,12 @@ func (ctrl *MaroonedPodsGateController) Run(ctx context.Context, threadiness int
 }
 
 // getConfig retrieves the MaroonedPodsConfig from the informer cache.
-// Returns the first config found, or nil if none exists.
+// Returns the first config found, or nil if none exists or if the CRD is not installed.
 func (ctrl *MaroonedPodsGateController) getConfig() *v1alpha1.MaroonedPodsConfig {
+	// If the config informer is nil (CRD not installed), return nil
+	if ctrl.configInformer == nil {
+		return nil
+	}
 	configs := ctrl.configInformer.GetStore().List()
 	if len(configs) == 0 {
 		return nil
