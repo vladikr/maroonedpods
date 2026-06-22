@@ -106,9 +106,9 @@ func Execute() {
 	// Only create informer if the CRD exists
 	if crdExists(app.maroonedpodsCli, "maroonedpodsconfigs.maroonedpods.io") {
 		app.configInformer = informers.GetMaroonedPodsConfigInformer(app.maroonedpodsCli)
-		klog.V(2).Info("MaroonedPodsConfig CRD found, enabling warm pool support")
+		klog.V(2).Info("MaroonedPodsConfig CRD found - warm pool support enabled")
 	} else {
-		klog.V(2).Info("MaroonedPodsConfig CRD not found, warm pool features disabled")
+		klog.V(2).Info("MaroonedPodsConfig CRD not found - warm pool features disabled")
 	}
 
 	app.vmiInformer = informers.GetVMIInformer(app.maroonedpodsCli)
