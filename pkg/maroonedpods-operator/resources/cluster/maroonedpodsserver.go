@@ -19,6 +19,26 @@ const (
 	MaroonedPodsServerServiceName      = mpServerResourceName
 )
 
+// buildObjectSelector creates a label selector that matches the given label key
+// and excludes pods with any of the exclusion labels (for mutual exclusivity)
+func buildObjectSelector(labelKey string, excludeLabels []string) *metav1.LabelSelector {
+	expressions := []metav1.LabelSelectorRequirement{
+		{
+			Key:      labelKey,
+			Operator: metav1.LabelSelectorOpExists,
+		},
+	}
+	for _, excludeLabel := range excludeLabels {
+		expressions = append(expressions, metav1.LabelSelectorRequirement{
+			Key:      excludeLabel,
+			Operator: metav1.LabelSelectorOpDoesNotExist,
+		})
+	}
+	return &metav1.LabelSelector{
+		MatchExpressions: expressions,
+	}
+}
+
 func createStaticMaroonedPodsLockResources(args *FactoryArgs) []client.Object {
 	return []client.Object{
 		createAPIServerClusterRole(),
@@ -97,15 +117,42 @@ func createGatingMutatingWebhook(namespace string, c client.Client, l logr.Logge
 
 	hooks := []admissionregistrationv1.MutatingWebhook{}
 	if includeHooks {
-		hooks = []admissionregistrationv1.MutatingWebhook{
+		// Define label configurations for mutually exclusive webhook entries
+		// Priority: maroon label > hypershift-cluster label > hypershift-cp label
+		type labelConfig struct {
+			nameSuffix    string
+			labelKey      string
+			excludeLabels []string
+		}
+		labelConfigs := []labelConfig{
 			{
-				Name:                    "gater.maroonedpods.io",
+				nameSuffix:    "maroon",
+				labelKey:      util.MaroonedPodLabel,
+				excludeLabels: nil, // highest priority - no exclusions
+			},
+			{
+				nameSuffix:    "hypershift-cluster",
+				labelKey:      util.HypershiftClusterLabel,
+				excludeLabels: []string{util.MaroonedPodLabel},
+			},
+			{
+				nameSuffix:    "hypershift-cp",
+				labelKey:      util.HypershiftHostedControlPlane,
+				excludeLabels: []string{util.MaroonedPodLabel, util.HypershiftClusterLabel},
+			},
+		}
+
+		// Create one webhook entry per label configuration
+		for _, cfg := range labelConfigs {
+			hooks = append(hooks, admissionregistrationv1.MutatingWebhook{
+				Name:                    "gater." + cfg.nameSuffix + ".maroonedpods.io",
 				AdmissionReviewVersions: []string{"v1", "v1beta1"},
 				FailurePolicy:           &failurePolicy,
 				TimeoutSeconds:          &timeoutSeconds,
 				SideEffects:             &sideEffect,
 				MatchPolicy:             &exactPolicy,
 				NamespaceSelector:       cr.Spec.NamespaceSelector,
+				ObjectSelector:          buildObjectSelector(cfg.labelKey, cfg.excludeLabels),
 				Rules: []admissionregistrationv1.RuleWithOperations{{
 					Operations: []admissionregistrationv1.OperationType{
 						admissionregistrationv1.Create,
@@ -125,7 +172,7 @@ func createGatingMutatingWebhook(namespace string, c client.Client, l logr.Logge
 						Port:      &defaultServicePort,
 					},
 				},
-			},
+			})
 		}
 	}
 
@@ -211,14 +258,42 @@ func createGatingValidatingWebhook(namespace string, c client.Client, l logr.Log
 					},
 				},
 			},
+		}
+
+		// Add 3 mutually exclusive validating webhooks for gate removal protection
+		type labelConfig struct {
+			nameSuffix    string
+			labelKey      string
+			excludeLabels []string
+		}
+		labelConfigs := []labelConfig{
 			{
-				Name:                    "remove.pod.gate.validator",
+				nameSuffix:    "maroon",
+				labelKey:      util.MaroonedPodLabel,
+				excludeLabels: nil,
+			},
+			{
+				nameSuffix:    "hypershift-cluster",
+				labelKey:      util.HypershiftClusterLabel,
+				excludeLabels: []string{util.MaroonedPodLabel},
+			},
+			{
+				nameSuffix:    "hypershift-cp",
+				labelKey:      util.HypershiftHostedControlPlane,
+				excludeLabels: []string{util.MaroonedPodLabel, util.HypershiftClusterLabel},
+			},
+		}
+
+		for _, cfg := range labelConfigs {
+			hooks = append(hooks, admissionregistrationv1.ValidatingWebhook{
+				Name:                    "remove.gate." + cfg.nameSuffix + ".maroonedpods.io",
 				AdmissionReviewVersions: []string{"v1", "v1beta1"},
 				FailurePolicy:           &failurePolicy,
 				TimeoutSeconds:          &timeoutSeconds,
 				SideEffects:             &sideEffect,
 				MatchPolicy:             &exactPolicy,
 				NamespaceSelector:       cr.Spec.NamespaceSelector,
+				ObjectSelector:          buildObjectSelector(cfg.labelKey, cfg.excludeLabels),
 				Rules: []admissionregistrationv1.RuleWithOperations{
 					{
 						Operations: []admissionregistrationv1.OperationType{
@@ -232,7 +307,6 @@ func createGatingValidatingWebhook(namespace string, c client.Client, l logr.Log
 						},
 					},
 				},
-
 				ClientConfig: admissionregistrationv1.WebhookClientConfig{
 					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
@@ -241,7 +315,7 @@ func createGatingValidatingWebhook(namespace string, c client.Client, l logr.Log
 						Port:      &defaultServicePort,
 					},
 				},
-			},
+			})
 		}
 	}
 
