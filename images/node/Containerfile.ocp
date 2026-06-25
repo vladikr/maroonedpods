@@ -1,0 +1,71 @@
+FROM quay.io/centos-bootc/centos-bootc:stream9
+
+# Kubernetes v1.35 repo (matches OCP 4.22)
+RUN cat > /etc/yum.repos.d/kubernetes.repo <<'EOF'
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v1.35/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v1.35/rpm/repodata/repomd.xml.key
+EOF
+
+# CRI-O v1.35 repo
+RUN cat > /etc/yum.repos.d/cri-o.repo <<'EOF'
+[cri-o]
+name=CRI-O
+baseurl=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.35/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.35/rpm/repodata/repomd.xml.key
+EOF
+
+RUN dnf install -y \
+    iptables iproute socat conntrack-tools \
+    curl tar systemd openssh-server \
+    cri-o kubelet \
+    cloud-init \
+    && dnf clean all
+
+# Configure kubelet to use CRI-O + bootstrap kubeconfig
+RUN mkdir -p /etc/systemd/system/kubelet.service.d /var/lib/kubelet && \
+    echo -e '[Service]\nExecStart=\nExecStart=/usr/bin/kubelet --container-runtime-endpoint=unix:///var/run/crio/crio.sock --bootstrap-kubeconfig=/etc/kubernetes/kubeconfig --kubeconfig=/var/lib/kubelet/kubeconfig --serialize-image-pulls=false' \
+    > /etc/systemd/system/kubelet.service.d/10-crio.conf
+
+# Kubelet config file (CNI paths moved here in v1.35)
+RUN cat > /var/lib/kubelet/config.yaml <<'EOF'
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+containerRuntimeEndpoint: unix:///var/run/crio/crio.sock
+EOF
+
+
+# CNI plugins
+RUN mkdir -p /opt/cni/bin /etc/kubernetes/cni/net.d /etc/kubernetes && \
+    curl -L https://github.com/containernetworking/plugins/releases/download/v1.5.0/cni-plugins-linux-amd64-v1.5.0.tgz \
+    | tar -C /opt/cni/bin -xz
+
+# Flexvolume directory (bootc has read-only /usr)
+RUN mkdir -p /usr/libexec/kubernetes/kubelet-plugins/volume/exec
+
+# Kernel parameters
+RUN echo -e "net.ipv4.ip_forward = 1\nnet.bridge.bridge-nf-call-iptables = 1" \
+    > /etc/sysctl.d/99-kubernetes.conf
+
+# Enable services
+RUN systemctl enable crio.service kubelet.service sshd.service
+
+# Disable swap
+RUN dnf remove -y zram-generator-defaults 2>/dev/null || true && \
+    systemctl mask systemd-zram-setup@zram0.service 2>/dev/null || true
+
+# Root access for debugging
+RUN echo 'root:debug123' | chpasswd && \
+    passwd -u root && \
+    sed -i 's/^root:!:/root:/' /etc/shadow && \
+    sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config.d/99-debug.conf
+
+LABEL io.buildah.version="1.0"
+LABEL io.container.bootc="true"

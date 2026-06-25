@@ -9,6 +9,7 @@ import (
 	"strings"
 	certv1 "k8s.io/api/certificates/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -768,15 +769,16 @@ func (ctrl *MaroonedPodsGateController) Run(ctx context.Context, threadiness int
 // getConfig retrieves the MaroonedPodsConfig from the informer cache.
 // Returns the first config found, or nil if none exists or if the CRD is not installed.
 func (ctrl *MaroonedPodsGateController) getConfig() *v1alpha1.MaroonedPodsConfig {
-	// If the config informer is nil (CRD not installed), return nil
 	if ctrl.configInformer == nil {
+		klog.Infof("getConfig: configInformer is nil (CRD not installed)")
 		return nil
 	}
 	configs := ctrl.configInformer.GetStore().List()
 	if len(configs) == 0 {
+		klog.Infof("getConfig: no MaroonedPodsConfig CRs found in store")
 		return nil
 	}
-	// Return the first config (there should typically be only one cluster-scoped config)
+	klog.Infof("getConfig: found %d config(s), joinConfig.ignitionSecretRef=%q", len(configs), configs[0].(*v1alpha1.MaroonedPodsConfig).Spec.JoinConfig.IgnitionSecretRef)
 	return configs[0].(*v1alpha1.MaroonedPodsConfig)
 }
 
@@ -1041,6 +1043,10 @@ passwd vladik
 		Name: virtv1.DefaultPodNetwork().Name,
 		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
 			Masquerade: &virtv1.InterfaceMasquerade{},
+		},
+		Ports: []virtv1.Port{
+			{Name: "kubelet", Port: 10250, Protocol: "TCP"},
+			{Name: "ssh", Port: 22, Protocol: "TCP"},
 		},
 	}
 	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeBinding)
@@ -1473,9 +1479,15 @@ func sanitizeGroupName(groupName string) string {
 // Returns the Secret name and whether Ignition is configured.
 func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace string) (string, bool) {
 	config := ctrl.getConfig()
-	if config == nil || config.Spec.JoinConfig.IgnitionSecretRef == "" {
+	if config == nil {
+		klog.Infof("ensureIgnitionSecret: config is nil, falling back to kubeadm")
 		return "", false
 	}
+	if config.Spec.JoinConfig.IgnitionSecretRef == "" {
+		klog.Infof("ensureIgnitionSecret: ignitionSecretRef is empty, falling back to kubeadm")
+		return "", false
+	}
+	klog.Infof("ensureIgnitionSecret: using ignitionSecretRef=%q for namespace %s", config.Spec.JoinConfig.IgnitionSecretRef, targetNamespace)
 
 	secretName := config.Spec.JoinConfig.IgnitionSecretRef
 	srcSecret, err := ctrl.maroonedpodsCli.CoreV1().Secrets(util.DefaultMaroonedPodsNs).Get(
@@ -1485,8 +1497,8 @@ func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace str
 		return "", false
 	}
 
-	if _, ok := srcSecret.Data["userData"]; !ok {
-		klog.Errorf("Ignition secret %s/%s has no 'userData' key", util.DefaultMaroonedPodsNs, secretName)
+	if _, ok := srcSecret.Data["userdata"]; !ok {
+		klog.Errorf("Ignition secret %s/%s has no 'userdata' key", util.DefaultMaroonedPodsNs, secretName)
 		return "", false
 	}
 
@@ -1505,6 +1517,10 @@ func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace str
 		_, err = ctrl.maroonedpodsCli.CoreV1().Secrets(targetNamespace).Create(
 			context.Background(), targetSecret, k8smetav1.CreateOptions{})
 		if err != nil {
+			if errors.IsAlreadyExists(err) {
+				klog.Infof("Ignition secret %s/%s already exists (race), continuing", targetNamespace, targetSecretName)
+				return targetSecretName, true
+			}
 			klog.Errorf("Failed to create Ignition secret in %s: %v", targetNamespace, err)
 			return "", false
 		}
@@ -1573,6 +1589,10 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
 			Masquerade: &virtv1.InterfaceMasquerade{},
 		},
+		Ports: []virtv1.Port{
+			{Name: "kubelet", Port: 10250, Protocol: "TCP"},
+			{Name: "ssh", Port: 22, Protocol: "TCP"},
+		},
 	}
 	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeBinding)
 	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
@@ -1629,6 +1649,24 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 				}},
 		)
 	}
+
+	// Data disk for local storage (etcd, etc.)
+	vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
+		virtv1.Disk{
+			Name: "datadisk",
+			DiskDevice: virtv1.DiskDevice{
+				Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio},
+			},
+		})
+	vmi.Spec.Volumes = append(vmi.Spec.Volumes,
+		virtv1.Volume{
+			Name: "datadisk",
+			VolumeSource: virtv1.VolumeSource{
+				EmptyDisk: &virtv1.EmptyDiskSource{
+					Capacity: resource.MustParse("50Gi"),
+				},
+			},
+		})
 
 	createdVMI, err := ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(namespace).Create(
 		context.Background(), vmi, k8smetav1.CreateOptions{})
@@ -1702,9 +1740,52 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 		return fmt.Errorf("failed to label/taint node %s for group %s: %v", nodeName, groupName, err)
 	}
 
+	// Clean up ghost pods from previous VMI boots (ContainerStatusUnknown)
+	ctrl.cleanupGhostPods(nodeName, vmi.Namespace)
+
 	ctrl.updateGroupPoolStatus(groupName, util.GroupPoolStateReady, vmi.Name, nodeName)
 	klog.Infof("Node %s labeled and tainted for group %s", nodeName, groupName)
 	return nil
+}
+
+func (ctrl *MaroonedPodsGateController) cleanupGhostPods(nodeName string, namespace string) {
+	pods, err := ctrl.maroonedpodsCli.CoreV1().Pods(namespace).List(
+		context.Background(), k8smetav1.ListOptions{
+			FieldSelector: "spec.nodeName=" + nodeName,
+		})
+	if err != nil {
+		klog.Warningf("Failed to list pods on node %s for ghost cleanup: %v", nodeName, err)
+		return
+	}
+
+	deleted := 0
+	for _, pod := range pods.Items {
+		isGhost := false
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Terminated != nil && cs.State.Terminated.Reason == "ContainerStatusUnknown" {
+				isGhost = true
+				break
+			}
+		}
+		if !isGhost {
+			for _, cs := range pod.Status.InitContainerStatuses {
+				if cs.State.Terminated != nil && cs.State.Terminated.Reason == "ContainerStatusUnknown" {
+					isGhost = true
+					break
+				}
+			}
+		}
+		if isGhost {
+			klog.Infof("Deleting ghost pod %s/%s on node %s", pod.Namespace, pod.Name, nodeName)
+			grace := int64(0)
+			_ = ctrl.maroonedpodsCli.CoreV1().Pods(pod.Namespace).Delete(
+				context.Background(), pod.Name, k8smetav1.DeleteOptions{GracePeriodSeconds: &grace})
+			deleted++
+		}
+	}
+	if deleted > 0 {
+		klog.Infof("Cleaned up %d ghost pods on node %s", deleted, nodeName)
+	}
 }
 
 func (ctrl *MaroonedPodsGateController) handleGroupPodDeletion(pod *v1.Pod, key string, groupName string) (error, enqueueState) {
