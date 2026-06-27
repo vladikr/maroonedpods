@@ -1538,6 +1538,47 @@ func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace str
 	return targetSecretName, true
 }
 
+func (ctrl *MaroonedPodsGateController) ensureVMNamespace(podNamespace string) (string, error) {
+	vmNs := podNamespace + "-vm"
+	_, err := ctrl.maroonedpodsCli.CoreV1().Namespaces().Get(context.Background(), vmNs, k8smetav1.GetOptions{})
+	if err == nil {
+		return vmNs, nil
+	}
+	if !errors.IsNotFound(err) {
+		return "", err
+	}
+
+	ns := &v1.Namespace{
+		ObjectMeta: k8smetav1.ObjectMeta{
+			Name: vmNs,
+			Labels: map[string]string{
+				"k8s.ovn.org/primary-user-defined-network": "",
+				"kubernetes.io/metadata.name":              vmNs,
+			},
+		},
+	}
+	_, err = ctrl.maroonedpodsCli.CoreV1().Namespaces().Create(context.Background(), ns, k8smetav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return "", fmt.Errorf("failed to create VM namespace %s: %v", vmNs, err)
+	}
+	klog.Infof("Created VM namespace %s with UDN label", vmNs)
+
+	// Create UDN in the VM namespace (applied via unstructured since we don't have the CRD types)
+	udnJSON := fmt.Sprintf(`{"apiVersion":"k8s.ovn.org/v1","kind":"UserDefinedNetwork","metadata":{"name":"tenant-vm-net","namespace":"%s"},"spec":{"topology":"Layer2","layer2":{"role":"Primary","subnets":["10.100.0.0/24"],"ipam":{"lifecycle":"Persistent"}}}}`, vmNs)
+	_, err = ctrl.maroonedpodsCli.CoreV1().RESTClient().Post().
+		AbsPath("/apis/k8s.ovn.org/v1/namespaces/" + vmNs + "/userdefinednetworks").
+		Body([]byte(udnJSON)).
+		SetHeader("Content-Type", "application/json").
+		DoRaw(context.Background())
+	if err != nil && !errors.IsAlreadyExists(err) {
+		klog.Warningf("Failed to create UDN in %s (may need manual creation): %v", vmNs, err)
+	} else {
+		klog.Infof("Created UDN tenant-vm-net in namespace %s", vmNs)
+	}
+
+	return vmNs, nil
+}
+
 func (ctrl *MaroonedPodsGateController) createGroupVMI(groupName string, namespace string) (*virtv1.VirtualMachineInstance, error) {
 	cpuCores, memoryMi, nodeImage, _ := ctrl.getGroupVMResourcesFromConfig()
 
@@ -1584,17 +1625,13 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 		util.GroupPoolStateLabel: util.GroupPoolStateCreating,
 	}
 
-	bridgeBinding := virtv1.Interface{
+	passtInterface := virtv1.Interface{
 		Name: virtv1.DefaultPodNetwork().Name,
-		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
-			Masquerade: &virtv1.InterfaceMasquerade{},
-		},
-		Ports: []virtv1.Port{
-			{Name: "kubelet", Port: 10250, Protocol: "TCP"},
-			{Name: "ssh", Port: 22, Protocol: "TCP"},
+		Binding: &virtv1.PluginBinding{
+			Name: "passt",
 		},
 	}
-	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeBinding)
+	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, passtInterface)
 	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
 
 	guestMemory := resource.MustParse(fmt.Sprintf("%dMi", memoryMi))
