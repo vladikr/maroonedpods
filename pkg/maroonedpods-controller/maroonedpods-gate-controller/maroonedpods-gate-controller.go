@@ -1498,8 +1498,12 @@ func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace str
 	}
 
 	if _, ok := srcSecret.Data["userdata"]; !ok {
-		klog.Errorf("Ignition secret %s/%s has no 'userdata' key", util.DefaultMaroonedPodsNs, secretName)
-		return "", false
+		if ud, ok2 := srcSecret.Data["userData"]; ok2 {
+			srcSecret.Data["userdata"] = ud
+		} else {
+			klog.Errorf("Ignition secret %s/%s has no 'userdata' or 'userData' key", util.DefaultMaroonedPodsNs, secretName)
+			return "", false
+		}
 	}
 
 	targetSecretName := "maroonedpods-ignition"
@@ -1508,7 +1512,9 @@ func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace str
 			Name:      targetSecretName,
 			Namespace: targetNamespace,
 		},
-		Data: srcSecret.Data,
+		Data: map[string][]byte{
+			"userdata": srcSecret.Data["userdata"],
+		},
 	}
 
 	existing, err := ctrl.maroonedpodsCli.CoreV1().Secrets(targetNamespace).Get(
@@ -1524,7 +1530,16 @@ func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace str
 			klog.Errorf("Failed to create Ignition secret in %s: %v", targetNamespace, err)
 			return "", false
 		}
-		klog.Infof("Created Ignition secret %s/%s", targetNamespace, targetSecretName)
+		klog.Infof("Created Ignition secret %s/%s, verifying propagation", targetNamespace, targetSecretName)
+		for i := 0; i < 10; i++ {
+			verified, verErr := ctrl.maroonedpodsCli.CoreV1().Secrets(targetNamespace).Get(
+				context.Background(), targetSecretName, k8smetav1.GetOptions{})
+			if verErr == nil && len(verified.Data["userdata"]) > 0 {
+				klog.Infof("Ignition secret %s/%s verified (%d bytes)", targetNamespace, targetSecretName, len(verified.Data["userdata"]))
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
 	} else {
 		existing.Data = srcSecret.Data
 		_, err = ctrl.maroonedpodsCli.CoreV1().Secrets(targetNamespace).Update(
@@ -1586,7 +1601,12 @@ func (ctrl *MaroonedPodsGateController) createGroupVMI(groupName string, namespa
 	klog.Infof("Creating group VMI %s for group %s in namespace %s", vmiName, groupName, namespace)
 
 	// Try to get Ignition config first (for OCP)
+	// Must be created well before the VMI so kubelet can sync the secret volume
 	ignitionSecretName, useIgnition := ctrl.ensureIgnitionSecret(namespace)
+	if useIgnition {
+		klog.Infof("Waiting for ignition secret %s to propagate before creating VMI", ignitionSecretName)
+		time.Sleep(5 * time.Second)
+	}
 
 	var userData string
 	if !useIgnition {
@@ -1627,8 +1647,8 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 
 	passtInterface := virtv1.Interface{
 		Name: virtv1.DefaultPodNetwork().Name,
-		Binding: &virtv1.PluginBinding{
-			Name: "passt",
+		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
+			PasstBinding: &virtv1.InterfacePasstBinding{},
 		},
 	}
 	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, passtInterface)
@@ -1656,11 +1676,19 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 			}},
 	)
 
-	vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
-		virtv1.Disk{
-			Name: "cloudinitdisk",
-			DiskDevice: virtv1.DiskDevice{
-				Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}})
+	if useIgnition {
+		vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
+			virtv1.Disk{
+				Name: "cloudinitdisk",
+				DiskDevice: virtv1.DiskDevice{
+					Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}})
+	} else {
+		vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks,
+			virtv1.Disk{
+				Name: "cloudinitdisk",
+				DiskDevice: virtv1.DiskDevice{
+					Disk: &virtv1.DiskTarget{Bus: virtv1.DiskBusVirtio}}})
+	}
 
 	if useIgnition {
 		vmi.Spec.Volumes = append(vmi.Spec.Volumes,
@@ -1739,6 +1767,8 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 		node.Labels = make(map[string]string)
 	}
 	node.Labels[util.GroupNodeLabel] = groupName
+	// HPP CSI requires this label for PV node affinity
+	node.Labels["topology.hostpath.csi/node"] = nodeName
 
 	// Remove blocking taints and add group taint
 	taintsToRemove := map[string]bool{
@@ -1814,6 +1844,31 @@ func (ctrl *MaroonedPodsGateController) cleanupGhostPods(nodeName string, namesp
 		}
 		if isGhost {
 			klog.Infof("Deleting ghost pod %s/%s on node %s", pod.Namespace, pod.Name, nodeName)
+			// Remove our finalizer first — without this, the delete hangs forever
+			hasFinalizer := false
+			cleanFinalizers := []string{}
+			for _, f := range pod.Finalizers {
+				if f == util.MaroonedPodsFinalizer {
+					hasFinalizer = true
+				} else {
+					cleanFinalizers = append(cleanFinalizers, f)
+				}
+			}
+			if hasFinalizer {
+				patch := map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"finalizers": cleanFinalizers,
+					},
+				}
+				patchBytes, err := json.Marshal(patch)
+				if err == nil {
+					_, err = ctrl.maroonedpodsCli.CoreV1().Pods(pod.Namespace).Patch(
+						context.Background(), pod.Name, k8stypes.MergePatchType, patchBytes, k8smetav1.PatchOptions{})
+					if err != nil {
+						klog.Warningf("Failed to remove finalizer from ghost pod %s/%s: %v", pod.Namespace, pod.Name, err)
+					}
+				}
+			}
 			grace := int64(0)
 			_ = ctrl.maroonedpodsCli.CoreV1().Pods(pod.Namespace).Delete(
 				context.Background(), pod.Name, k8smetav1.DeleteOptions{GracePeriodSeconds: &grace})

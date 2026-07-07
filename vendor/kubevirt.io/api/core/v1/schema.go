@@ -1313,12 +1313,13 @@ type DHCPPrivateOptions struct {
 // Represents the method which will be used to connect the interface to the guest.
 // Only one of its members may be specified.
 type InterfaceBindingMethod struct {
-	Bridge     *InterfaceBridge     `json:"bridge,omitempty"`
-	Slirp      *InterfaceSlirp      `json:"slirp,omitempty"`
-	Masquerade *InterfaceMasquerade `json:"masquerade,omitempty"`
-	SRIOV      *InterfaceSRIOV      `json:"sriov,omitempty"`
-	Macvtap    *InterfaceMacvtap    `json:"macvtap,omitempty"`
-	Passt      *InterfacePasst      `json:"passt,omitempty"`
+	Bridge       *InterfaceBridge       `json:"bridge,omitempty"`
+	Slirp        *InterfaceSlirp        `json:"slirp,omitempty"`
+	Masquerade   *InterfaceMasquerade   `json:"masquerade,omitempty"`
+	SRIOV        *InterfaceSRIOV        `json:"sriov,omitempty"`
+	Macvtap      *InterfaceMacvtap      `json:"macvtap,omitempty"`
+	Passt        *InterfacePasst        `json:"passt,omitempty"`
+	PasstBinding *InterfacePasstBinding `json:"passtBinding,omitempty"`
 }
 
 // InterfaceBridge connects to a given network via a linux bridge.
@@ -1336,8 +1337,11 @@ type InterfaceSRIOV struct{}
 // InterfaceMacvtap connects to a given network by extending the Kubernetes node's L2 networks via a macvtap interface.
 type InterfaceMacvtap struct{}
 
-// InterfacePasst connects to a given network.
+// InterfacePasst connects to a given network (deprecated since v1.3).
 type InterfacePasst struct{}
+
+// InterfacePasstBinding connects to a given network using passt core binding (beta in v1.8).
+type InterfacePasstBinding struct{}
 
 // PluginBinding represents a binding implemented in a plugin.
 type PluginBinding struct {

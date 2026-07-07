@@ -209,6 +209,258 @@ WantedBy=multi-user.target
 ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'cni-symlinks.service']
 ign['systemd']['units'].append(cni_symlinks_unit)
 
+# 4b. Add cni-guard script and service (removes Multus CNI config that overrides our bridge CNI)
+print("Adding cni-guard service...")
+cni_guard_script = r"""#!/bin/bash
+LOG="/var/log/cni-guard.log"
+CNI_DIR="/etc/kubernetes/cni/net.d"
+MULTUS="$CNI_DIR/00-multus.conf"
+RESTARTED=false
+
+echo "$(date): cni-guard started" >> "$LOG"
+
+while true; do
+    if [ -f "$MULTUS" ]; then
+        rm -f "$MULTUS" "$CNI_DIR/whereabouts.d" 2>/dev/null
+        echo "$(date): removed multus config" >> "$LOG"
+        if [ "$RESTARTED" = "false" ]; then
+            systemctl restart crio 2>/dev/null
+            echo "$(date): restarted crio" >> "$LOG"
+            RESTARTED=true
+        fi
+    fi
+    modprobe br_netfilter 2>/dev/null
+    sysctl -qw net.bridge.bridge-nf-call-iptables=1 net.ipv4.ip_forward=1 2>/dev/null
+    sleep 5
+done
+"""
+add_or_replace_file('/usr/local/bin/cni-guard.sh', cni_guard_script, 0o755)
+
+cni_guard_unit = {
+    "name": "cni-guard.service",
+    "enabled": True,
+    "contents": """[Unit]
+Description=Guard bridge CNI - removes Multus config from CRI-O CNI dir
+After=cri-o.service
+Wants=cri-o.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+ExecStart=/usr/local/bin/cni-guard.sh
+
+[Install]
+WantedBy=multi-user.target
+"""
+}
+ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'cni-guard.service']
+ign['systemd']['units'].append(cni_guard_unit)
+
+# 4c. Add dynamic DNAT sync service (routes ClusterIP services for bridge CNI pods)
+print("Adding service-dnat-sync service...")
+dnat_sync_script = r"""#!/bin/bash
+CHAIN="SVC-DNAT"
+LOG="/var/log/service-dnat-sync.log"
+KC="/var/lib/kubelet/kubeconfig"
+
+while [ ! -f "$KC" ]; do
+    echo "$(date): waiting for $KC..." >> "$LOG"
+    sleep 5
+done
+
+iptables -t nat -N "$CHAIN" 2>/dev/null || true
+iptables -t nat -C PREROUTING -j "$CHAIN" 2>/dev/null || iptables -t nat -I PREROUTING -j "$CHAIN"
+iptables -t nat -N SVC-DNS 2>/dev/null || true
+iptables -t nat -C OUTPUT -j SVC-DNS 2>/dev/null || iptables -t nat -I OUTPUT -j SVC-DNS
+
+TENANT_NS=$(hostname | sed 's/maroonedpods-group-//')
+echo "$(date): service-dnat-sync started, tenant=$TENANT_NS" >> "$LOG"
+
+while true; do
+    kubectl --kubeconfig "$KC" get svc -n "$TENANT_NS" -o json > /tmp/svcs.json 2>/dev/null
+    kubectl --kubeconfig "$KC" get svc dns-default -n openshift-dns -o json > /tmp/svcs_dns.json 2>/dev/null
+    kubectl --kubeconfig "$KC" get endpoints -n "$TENANT_NS" -o json > /tmp/eps.json 2>/dev/null
+    kubectl --kubeconfig "$KC" get endpoints dns-default -n openshift-dns -o json > /tmp/eps_dns.json 2>/dev/null
+
+    python3 -c "
+import json
+svcs = json.load(open('/tmp/svcs.json'))
+eps = json.load(open('/tmp/eps.json'))
+try:
+    dns_svc = json.load(open('/tmp/svcs_dns.json'))
+    svcs['items'].append(dns_svc)
+except: pass
+try:
+    dns_ep = json.load(open('/tmp/eps_dns.json'))
+    eps['items'].append(dns_ep)
+except: pass
+json.dump(svcs, open('/tmp/svcs.json','w'))
+json.dump(eps, open('/tmp/eps.json','w'))
+" 2>/dev/null
+
+    if [ ! -s /tmp/svcs.json ] || [ ! -s /tmp/eps.json ]; then
+        sleep 10
+        continue
+    fi
+
+    NEW_RULES=$(python3 -c "
+import json, socket
+svcs = json.load(open('/tmp/svcs.json'))
+eps = json.load(open('/tmp/eps.json'))
+try:
+    vm_ip = socket.gethostbyname(socket.gethostname())
+    vm_subnet = '.'.join(vm_ip.split('.')[:2])
+except:
+    vm_subnet = ''
+ep_map = {}
+for ep in eps.get('items', []):
+    ns = ep['metadata']['namespace']
+    name = ep['metadata']['name']
+    for subset in ep.get('subsets', []):
+        for addr in subset.get('addresses', []):
+            for port in subset.get('ports', []):
+                ep_map.setdefault((ns,name),[]).append((addr['ip'], port['port'], port.get('protocol','TCP').lower(), port.get('name','')))
+for svc in svcs.get('items', []):
+    cip = svc['spec'].get('clusterIP','')
+    if not cip or cip == 'None': continue
+    ns = svc['metadata']['namespace']
+    name = svc['metadata']['name']
+    endpoints = ep_map.get((ns,name), [])
+    if not endpoints: continue
+    for port in svc['spec'].get('ports', []):
+        proto = port.get('protocol','TCP').lower()
+        sp = port['port']
+        tp = port.get('targetPort', sp)
+        pname = port.get('name', '')
+        matching = []
+        for eip, ep, eproto, ename in endpoints:
+            if eproto != proto: continue
+            if ep == sp or ep == tp or (isinstance(tp, str) and ename == tp) or (pname and ename == pname):
+                matching.append((eip, ep))
+        if not matching: continue
+        local = [m for m in matching if m[0].startswith(vm_subnet)]
+        eip, ep = (local or matching)[0]
+        print(f'-d {cip}/32 -p {proto} --dport {sp} -j DNAT --to-destination {eip}:{ep}')
+" 2>/dev/null)
+
+    if [ -n "$NEW_RULES" ]; then
+        iptables -t nat -F "$CHAIN" 2>/dev/null
+        iptables -t nat -F SVC-DNS 2>/dev/null
+
+        API_EP=$(kubectl --kubeconfig "$KC" get endpoints kubernetes -n default -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null)
+        if [ -n "$API_EP" ]; then
+            iptables -t nat -A "$CHAIN" -d 172.30.0.1/32 -p tcp --dport 443 -j DNAT --to-destination $API_EP:6443 2>/dev/null
+        fi
+
+        while IFS= read -r rule; do
+            iptables -t nat -A "$CHAIN" $rule 2>/dev/null
+            if echo "$rule" | grep -q "\-\-dport 53 "; then
+                iptables -t nat -A SVC-DNS $rule 2>/dev/null
+            fi
+        done <<< "$NEW_RULES"
+        RULE_COUNT=$(echo "$NEW_RULES" | wc -l)
+        echo "$(date): synced $RULE_COUNT DNAT rules (+ API + DNS)" >> "$LOG"
+    fi
+
+    sleep 30
+done
+"""
+add_or_replace_file('/usr/local/bin/service-dnat-sync.sh', dnat_sync_script, 0o755)
+
+dnat_sync_unit = {
+    "name": "service-dnat-sync.service",
+    "enabled": True,
+    "contents": """[Unit]
+Description=Dynamic DNAT sync for Kubernetes services
+After=network-online.target kubelet.service
+Wants=kubelet.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/local/bin/service-dnat-sync.sh
+
+[Install]
+WantedBy=multi-user.target
+"""
+}
+ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'service-dnat-sync.service']
+ign['systemd']['units'].append(dnat_sync_unit)
+
+# 4d. Add pod-network-nat service (MASQUERADE + FORWARD for bridge CNI pods)
+print("Adding pod-network-nat service...")
+pod_nat_unit = {
+    "name": "pod-network-nat.service",
+    "enabled": True,
+    "contents": """[Unit]
+Description=Enable NAT and forwarding for bridge CNI pods
+After=network-online.target
+Before=kubelet.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/bin/bash -c 'iptables -P FORWARD ACCEPT; iptables -t nat -A POSTROUTING -s 10.244.0.0/24 ! -d 10.244.0.0/24 -j MASQUERADE; iptables -A FORWARD -i cni0 -j ACCEPT; iptables -A FORWARD -o cni0 -j ACCEPT'
+
+[Install]
+WantedBy=multi-user.target
+"""
+}
+ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'pod-network-nat.service']
+ign['systemd']['units'].append(pod_nat_unit)
+
+# 4e. Add data-disk-setup service (formats and mounts HPP storage disk)
+print("Adding data-disk-setup service...")
+data_disk_unit = {
+    "name": "data-disk-setup.service",
+    "enabled": True,
+    "contents": """[Unit]
+Description=Format data disk and mount HPP storage
+After=local-fs.target
+Before=kubelet.service crio.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/bin/bash -c 'DEV=/dev/vdc; if [ ! -b $$DEV ]; then exit 0; fi; if ! blkid $$DEV | grep -q TYPE; then mkfs.ext4 -F $$DEV; fi; mkdir -p /var/hpp-csi-local-basic; mount $$DEV /var/hpp-csi-local-basic'
+
+[Install]
+WantedBy=multi-user.target
+"""
+}
+ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'data-disk-setup.service']
+ign['systemd']['units'].append(data_disk_unit)
+
+# 4f. Add debug-boot service (sets core password for console access)
+print("Adding debug-boot service...")
+debug_script = r"""#!/bin/bash
+echo 'core:debug123' | chpasswd
+echo "debug: password set" > /var/log/debug-boot.log
+"""
+add_or_replace_file('/usr/local/bin/debug-boot.sh', debug_script, 0o755)
+
+debug_boot_unit = {
+    "name": "debug-boot.service",
+    "enabled": True,
+    "contents": """[Unit]
+Description=Debug boot diagnostics and set core password
+After=network-online.target kubelet.service
+Wants=kubelet.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/bin/debug-boot.sh
+
+[Install]
+WantedBy=multi-user.target
+"""
+}
+ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'debug-boot.service']
+ign['systemd']['units'].append(debug_boot_unit)
+
 # 5. Disable/mask OVS units
 print("Disabling OVS/OVN units...")
 ovs_units = [
@@ -221,7 +473,13 @@ ovs_units = [
     'ipsec.service',
     'nmstate-configuration.service',
     'nmstate.service',
-    'wait-for-primary-ip.service'
+    'wait-for-primary-ip.service',
+    'configure-ovs.service',
+    'mtu-migration.service',
+    'ovn-controller.service',
+    'ovnkube-node.service',
+    'ovnkube-controller.service',
+    'NetworkManager-wait-online.service'
 ]
 for unit_name in ovs_units:
     # Remove existing unit if present
