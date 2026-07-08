@@ -1597,12 +1597,14 @@ func (ctrl *MaroonedPodsGateController) ensureVMNamespace(podNamespace string) (
 func (ctrl *MaroonedPodsGateController) createGroupVMI(groupName string, namespace string) (*virtv1.VirtualMachineInstance, error) {
 	cpuCores, memoryMi, nodeImage, _ := ctrl.getGroupVMResourcesFromConfig()
 
+	vmNamespace := namespace
+
 	vmiName := fmt.Sprintf("%s%s", util.GroupVMNamePrefix, sanitizeGroupName(groupName))
-	klog.Infof("Creating group VMI %s for group %s in namespace %s", vmiName, groupName, namespace)
+	klog.Infof("Creating group VMI %s for group %s in namespace %s (pods in %s)", vmiName, groupName, vmNamespace, namespace)
 
 	// Try to get Ignition config first (for OCP)
 	// Must be created well before the VMI so kubelet can sync the secret volume
-	ignitionSecretName, useIgnition := ctrl.ensureIgnitionSecret(namespace)
+	ignitionSecretName, useIgnition := ctrl.ensureIgnitionSecret(vmNamespace)
 	if useIgnition {
 		klog.Infof("Waiting for ignition secret %s to propagate before creating VMI", ignitionSecretName)
 		time.Sleep(5 * time.Second)
@@ -1633,7 +1635,7 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 
 	encodedData := base64.StdEncoding.EncodeToString([]byte(userData))
 
-	vmi := virtv1.NewVMIReferenceFromNameWithNS(namespace, vmiName)
+	vmi := virtv1.NewVMIReferenceFromNameWithNS(vmNamespace, vmiName)
 	vmi.Spec = virtv1.VirtualMachineInstanceSpec{Domain: virtv1.DomainSpec{}}
 	vmi.TypeMeta = k8smetav1.TypeMeta{
 		APIVersion: virtv1.GroupVersion.String(),
@@ -1733,7 +1735,7 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 			},
 		})
 
-	createdVMI, err := ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(namespace).Create(
+	createdVMI, err := ctrl.maroonedpodsCli.KubevirtClient().KubevirtV1().VirtualMachineInstances(vmNamespace).Create(
 		context.Background(), vmi, k8smetav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create group VMI: %v", err)
@@ -1769,6 +1771,10 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 	node.Labels[util.GroupNodeLabel] = groupName
 	// HPP CSI requires this label for PV node affinity
 	node.Labels["topology.hostpath.csi/node"] = nodeName
+	// Prevent ovnkube-node DaemonSet from running on virtual node
+	// The internal OVN stack (br-ex, br-int, OpenFlow rules) interferes with
+	// cross-node connectivity for bridge CNI pods inside the VM
+	node.Labels["network.operator.openshift.io/dpu-host"] = ""
 
 	// Remove blocking taints and add group taint
 	taintsToRemove := map[string]bool{
@@ -1808,7 +1814,8 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 	}
 
 	// Clean up ghost pods from previous VMI boots (ContainerStatusUnknown)
-	ctrl.cleanupGhostPods(nodeName, vmi.Namespace)
+	// Ghost pods are in the tenant namespace (groupName), not the VM namespace
+	ctrl.cleanupGhostPods(nodeName, groupName)
 
 	ctrl.updateGroupPoolStatus(groupName, util.GroupPoolStateReady, vmi.Name, nodeName)
 	klog.Infof("Node %s labeled and tainted for group %s", nodeName, groupName)
