@@ -9,6 +9,7 @@ import (
 	"strings"
 	certv1 "k8s.io/api/certificates/v1"
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -757,6 +758,9 @@ func (ctrl *MaroonedPodsGateController) Run(ctx context.Context, threadiness int
 
 	// Start CSR auto-approval for nodes created by this controller
 	go wait.Until(ctrl.reconcileCSRs, 15*time.Second, ctrl.stop)
+
+	// Start endpoint patcher for Route/LB-exposed services on group VMs
+	go wait.Until(ctrl.reconcileEndpointSlices, 30*time.Second, ctrl.stop)
 
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(ctrl.runWorker, time.Second, ctrl.stop)
@@ -1553,6 +1557,28 @@ func (ctrl *MaroonedPodsGateController) ensureIgnitionSecret(targetNamespace str
 	return targetSecretName, true
 }
 
+func (ctrl *MaroonedPodsGateController) ensurePasstNAD(namespace string) {
+	nadName := "primary-udn-kubevirt-binding"
+	_, err := ctrl.maroonedpodsCli.CoreV1().RESTClient().Get().
+		AbsPath("/apis/k8s.cni.cncf.io/v1/namespaces/" + namespace + "/network-attachment-definitions/" + nadName).
+		DoRaw(context.Background())
+	if err == nil {
+		return
+	}
+
+	nadJSON := fmt.Sprintf(`{"apiVersion":"k8s.cni.cncf.io/v1","kind":"NetworkAttachmentDefinition","metadata":{"name":"%s","namespace":"%s"},"spec":{"config":"{\"cniVersion\":\"1.0.0\",\"name\":\"%s\",\"plugins\":[{\"type\":\"kubevirt-passt-binding\"}]}"}}`, nadName, namespace, nadName)
+	_, err = ctrl.maroonedpodsCli.CoreV1().RESTClient().Post().
+		AbsPath("/apis/k8s.cni.cncf.io/v1/namespaces/" + namespace + "/network-attachment-definitions").
+		Body([]byte(nadJSON)).
+		SetHeader("Content-Type", "application/json").
+		DoRaw(context.Background())
+	if err != nil {
+		klog.Warningf("Failed to create passt NAD in %s: %v", namespace, err)
+	} else {
+		klog.Infof("Created passt NAD %s in namespace %s", nadName, namespace)
+	}
+}
+
 func (ctrl *MaroonedPodsGateController) ensureVMNamespace(podNamespace string) (string, error) {
 	vmNs := podNamespace + "-vm"
 	_, err := ctrl.maroonedpodsCli.CoreV1().Namespaces().Get(context.Background(), vmNs, k8smetav1.GetOptions{})
@@ -1601,6 +1627,8 @@ func (ctrl *MaroonedPodsGateController) createGroupVMI(groupName string, namespa
 
 	vmiName := fmt.Sprintf("%s%s", util.GroupVMNamePrefix, sanitizeGroupName(groupName))
 	klog.Infof("Creating group VMI %s for group %s in namespace %s (pods in %s)", vmiName, groupName, vmNamespace, namespace)
+
+	ctrl.ensurePasstNAD(vmNamespace)
 
 	// Try to get Ignition config first (for OCP)
 	// Must be created well before the VMI so kubelet can sync the secret volume
@@ -1817,9 +1845,138 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 	// Ghost pods are in the tenant namespace (groupName), not the VM namespace
 	ctrl.cleanupGhostPods(nodeName, groupName)
 
+	// Patch EndpointSlices for Route/LB-exposed services so external traffic
+	// reaches the VM's host-namespace proxy instead of unreachable bridge pod IPs
+	ctrl.ensureEndpointSlices(groupName, nodeName)
+
 	ctrl.updateGroupPoolStatus(groupName, util.GroupPoolStateReady, vmi.Name, nodeName)
 	klog.Infof("Node %s labeled and tainted for group %s", nodeName, groupName)
 	return nil
+}
+
+// ensureEndpointSlices creates custom EndpointSlices that point to the VM's
+// node IP instead of bridge pod IPs. Bridge pods (10.244.0.0/24) are inside
+// the VM and unreachable from the management cluster's OVN network. A socat
+// reverse proxy inside the VM forwards from the node IP port to the bridge pod.
+func (ctrl *MaroonedPodsGateController) ensureEndpointSlices(namespace, nodeName string) {
+	nodeObj, exists, err := ctrl.nodeInformer.GetStore().GetByKey(nodeName)
+	if err != nil || !exists {
+		klog.Warningf("ensureEndpointSlices: node %s not found", nodeName)
+		return
+	}
+	node := nodeObj.(*v1.Node)
+	nodeIP := ""
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == v1.NodeInternalIP {
+			nodeIP = addr.Address
+			break
+		}
+	}
+	if nodeIP == "" {
+		klog.Warningf("ensureEndpointSlices: no InternalIP for node %s", nodeName)
+		return
+	}
+
+	type svcEndpoint struct {
+		serviceName string
+		port        int32
+		portName    string
+		proxyPort   int32
+	}
+
+	endpoints := []svcEndpoint{
+		{serviceName: "ignition-server-proxy", port: 8443, portName: "https", proxyPort: 8443},
+		{serviceName: "konnectivity-server", port: 8091, portName: "", proxyPort: 8091},
+		{serviceName: "oauth-openshift", port: 6443, portName: "", proxyPort: 16443},
+		{serviceName: "kube-apiserver", port: 6443, portName: "", proxyPort: 6443},
+	}
+
+	managedBy := "maroonedpods-controller"
+	proto := v1.ProtocolTCP
+	ready := true
+
+	for _, ep := range endpoints {
+		sliceName := fmt.Sprintf("%s-mp-proxy", ep.serviceName)
+
+		existing, err := ctrl.maroonedpodsCli.DiscoveryV1().EndpointSlices(namespace).Get(
+			context.Background(), sliceName, k8smetav1.GetOptions{})
+		if err == nil {
+			needsUpdate := false
+			if len(existing.Endpoints) == 0 || len(existing.Endpoints[0].Addresses) == 0 || existing.Endpoints[0].Addresses[0] != nodeIP {
+				needsUpdate = true
+			}
+			if len(existing.Ports) == 0 || *existing.Ports[0].Port != ep.proxyPort {
+				needsUpdate = true
+			}
+			if !needsUpdate {
+				continue
+			}
+			existing.Endpoints = []discoveryv1.Endpoint{{
+				Addresses:  []string{nodeIP},
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+				NodeName:   &nodeName,
+			}}
+			existing.Ports = []discoveryv1.EndpointPort{{
+				Name:     &ep.portName,
+				Port:     &ep.proxyPort,
+				Protocol: &proto,
+			}}
+			_, err = ctrl.maroonedpodsCli.DiscoveryV1().EndpointSlices(namespace).Update(
+				context.Background(), existing, k8smetav1.UpdateOptions{})
+			if err != nil {
+				klog.Warningf("ensureEndpointSlices: failed to update %s: %v", sliceName, err)
+			}
+			continue
+		}
+
+		if !errors.IsNotFound(err) {
+			klog.Warningf("ensureEndpointSlices: failed to get %s: %v", sliceName, err)
+			continue
+		}
+
+		epSlice := &discoveryv1.EndpointSlice{
+			ObjectMeta: k8smetav1.ObjectMeta{
+				Name:      sliceName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"kubernetes.io/service-name":                ep.serviceName,
+					"endpointslice.kubernetes.io/managed-by":    managedBy,
+				},
+			},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Endpoints: []discoveryv1.Endpoint{{
+				Addresses:  []string{nodeIP},
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+				NodeName:   &nodeName,
+			}},
+			Ports: []discoveryv1.EndpointPort{{
+				Name:     &ep.portName,
+				Port:     &ep.proxyPort,
+				Protocol: &proto,
+			}},
+		}
+
+		_, err = ctrl.maroonedpodsCli.DiscoveryV1().EndpointSlices(namespace).Create(
+			context.Background(), epSlice, k8smetav1.CreateOptions{})
+		if err != nil {
+			if strings.Contains(err.Error(), "is not allowed") {
+				klog.Warningf("ensureEndpointSlices: OCP admission blocked creating %s/%s. "+
+					"Admin must create it once: oc apply -f - <<EOF\n"+
+					"apiVersion: discovery.k8s.io/v1\nkind: EndpointSlice\nmetadata:\n"+
+					"  name: %s\n  namespace: %s\n  labels:\n"+
+					"    kubernetes.io/service-name: %s\n"+
+					"    endpointslice.kubernetes.io/managed-by: %s\n"+
+					"addressType: IPv4\nendpoints:\n- addresses: [\"%s\"]\n  conditions: {ready: true}\n"+
+					"  nodeName: %s\nports:\n- port: %d\n  protocol: TCP\nEOF",
+					namespace, sliceName, sliceName, namespace, ep.serviceName, managedBy, nodeIP, nodeName, ep.proxyPort)
+			} else {
+				klog.Warningf("ensureEndpointSlices: failed to create %s: %v", sliceName, err)
+			}
+		} else {
+			klog.Infof("Created proxy EndpointSlice %s/%s -> %s:%d", namespace, sliceName, nodeIP, ep.proxyPort)
+		}
+	}
+
 }
 
 func (ctrl *MaroonedPodsGateController) cleanupGhostPods(nodeName string, namespace string) {
@@ -2178,5 +2335,25 @@ func (ctrl *MaroonedPodsGateController) reconcileCSRs() {
 		} else {
 			klog.Infof("Successfully approved CSR %s for node %s", csr.Name, nodeName)
 		}
+	}
+}
+
+// reconcileEndpointSlices finds all Ready group VMIs and ensures custom
+// EndpointSlices exist for Route/LB-exposed services in their namespaces.
+func (ctrl *MaroonedPodsGateController) reconcileEndpointSlices() {
+	vmis := ctrl.vmiInformer.GetStore().List()
+	for _, obj := range vmis {
+		vmi := obj.(*virtv1.VirtualMachineInstance)
+		if vmi.Labels == nil {
+			continue
+		}
+		groupName, ok := vmi.Labels[util.GroupLabel]
+		if !ok || groupName == "" {
+			continue
+		}
+		if state, ok := vmi.Labels[util.GroupPoolStateLabel]; !ok || state != util.GroupPoolStateReady {
+			continue
+		}
+		ctrl.ensureEndpointSlices(groupName, vmi.Name)
 	}
 }

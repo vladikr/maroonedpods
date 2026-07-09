@@ -280,6 +280,50 @@ func getControllerClusterPolicyRules() []rbacv1.PolicyRule {
 				"approve",
 			},
 		},
+		{
+			APIGroups: []string{
+				"discovery.k8s.io",
+			},
+			Resources: []string{
+				"endpointslices",
+			},
+			Verbs: []string{
+				"get", "list", "watch", "create", "update", "patch", "delete",
+			},
+		},
+		{
+			APIGroups: []string{
+				"",
+			},
+			Resources: []string{
+				"endpoints/restricted",
+			},
+			Verbs: []string{
+				"create",
+			},
+		},
+		{
+			APIGroups: []string{
+				"",
+			},
+			Resources: []string{
+				"namespaces",
+			},
+			Verbs: []string{
+				"get", "list", "watch", "create",
+			},
+		},
+		{
+			APIGroups: []string{
+				"k8s.cni.cncf.io",
+			},
+			Resources: []string{
+				"network-attachment-definitions",
+			},
+			Verbs: []string{
+				"get", "list", "watch", "create",
+			},
+		},
 	}
 }
 
