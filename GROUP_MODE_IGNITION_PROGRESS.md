@@ -342,14 +342,30 @@ After fixing issues 10-15, the node `maroonedpods-group-test-cp-1` successfully:
 3. Kubelet started and generated CSRs
 4. CSRs approved → node registered as `worker` role, v1.35.5
 
-### Issue 16: Node is NotReady — CNI not configured (CURRENT)
+### Issue 16: Node is NotReady — CNI not configured ✓ FIXED
 **Problem**: Node is `NotReady` with: `container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:Network plugin returns error: no CNI configuration file in /etc/kubernetes/cni/net.d/`
 **Root cause**: OVN-Kubernetes (the cluster's CNI) is not running on this node because we disabled OVS. Without OVN, there's no CNI config dropped in `/etc/kubernetes/cni/net.d/`.
-**Possible approaches**:
-1. Enable a minimal CNI (like bridge or host-local) for the VM node
-2. Re-enable OVS but configure it to work with masquerade NAT
-3. Use a different approach entirely — the VM is inside the pod network already, so maybe a simple bridge CNI pointing to the masquerade interface would work
-4. Skip CNI entirely if we just need the node to accept pods that use hostNetwork
+**Fix**: Added bridge CNI config (`/etc/kubernetes/cni/net.d/10-bridge.conflist`) and `cni-bridge-setup.service` to the Ignition. Bridge CNI uses host-local IPAM with subnet 10.244.0.0/24. Added to gen-ignition.py for automatic inclusion.
+
+### Issue 17: Pods on virtual node can't reach Kubernetes API (CURRENT)
+**Problem**: Pods scheduled to the virtual node crash with `dial tcp 172.30.0.1:443: i/o timeout`.
+**Root causes** (two layers):
+1. **Bridge CNI has no outbound NAT**: Traffic from pod subnet 10.244.0.0/24 needs iptables MASQUERADE + FORWARD ACCEPT to reach the external network through the VM's enp1s0 interface.
+2. **HyperShift NetworkPolicy blocks service CIDR**: The `virt-launcher` NetworkPolicy in the HyperShift namespace blocks egress to `10.128.0.0/14` (pod network) and `172.30.0.0/16` (service network). This policy is reconciled by the control plane operator and gets recreated immediately if deleted.
+**Fix**: Added `pod-network-nat.service` to Ignition that:
+- Enables ip_forward and sets FORWARD policy to ACCEPT
+- Adds MASQUERADE for pod subnet traffic
+- DNATs `172.30.0.1:443` → actual API server IP:6443 (resolved from bootstrap kubeconfig hostname)
+This bypasses the NetworkPolicy because traffic goes to the real API server IP (e.g., 192.168.x.x) which is NOT in the blocked ranges.
+
+### Issue 18: Node InternalIP is 10.0.2.2 — not routable (KNOWN)
+**Problem**: The kubelet registers the node with InternalIP 10.0.2.2 (QEMU masquerade NAT IP). The apiserver can't reach the kubelet at this IP for `oc logs`, `oc exec`, `oc debug`.
+**Root cause**: The VM doesn't know its virt-launcher pod IP (e.g., 10.129.2.x). The kubelet auto-detects IP from enp1s0 which gives the QEMU NAT IP.
+**Status**: Port 10250 added to VMI masquerade ports (nftables DNAT rules confirmed). Port 22 also added for SSH debugging. The kubelet IS functional (pulls images, starts containers), but apiserver→kubelet API calls (logs, exec) don't work.
+**Potential fixes**: 
+- Controller patches node InternalIP after registration (but kubelet overwrites on heartbeat)
+- Set `--node-ip` in kubelet via systemd drop-in (but VM doesn't know pod IP at boot)
+- Use CUDN/bridge networking instead of masquerade (gives VM a cluster-routable IP directly)
 
 ### HyperShift Reference Architecture (from research)
 HyperShift solves the same problem using:
@@ -359,14 +375,25 @@ HyperShift solves the same problem using:
 4. **KubeVirt platform RHCOS image**
 5. OVN runs INSIDE the hosted cluster VMs (separate from the management cluster OVN)
 
-## Current Cluster State (as of 2026-06-20 ~10:30 UTC)
+## Current Cluster State (as of 2026-06-22 ~21:45 UTC)
 
-- **Node `maroonedpods-group-test-cp-1`**: Registered, NotReady (CNI missing)
-- **VMI**: Running in `test-group-mode`, KubeVirt RHCOS 9.8.20260605-0, kernel 5.14.0-687.13.1
-- **Kubelet**: Active and running, CRI-O active, both CSRs approved
-- **VM IP**: `10.0.2.2` on `enp1s0` (masquerade NAT)
-- **SSH**: Working via `virtctl ssh --known-hosts="" -i ~/.ssh/id_rsa core@maroonedpods-group-test-cp-1`
-- **Secret `worker-ignition-full`**: ~625KB Ignition config with encapsulated MC, OVS disabled, SSH key, resolv-prepender bypass, create-node-env service. Saved at `/tmp/worker-ignition-no-ovs.json`
+- **Cluster**: `virt-den-422b` OCP 4.22.1 with HyperShift tenant `clusters-tenant-final`
+- **Kubeconfig**: `~/devel/kubeconfig`
+- **Controller image**: `quay.io/vladikr/maroonedpods-controller:pod-nat` (ports 10250+22, debug logging)
+- **Ignition generator**: `/tmp/gen-ignition.py` (generates per-cluster Ignition with all fixes)
+- **MaroonedPodsConfig CR**: nodeImage RHCOS KubeVirt, 4 CPU, 6GB RAM, ignitionSecretRef=worker-ignition-full
+
+### What's working end-to-end:
+1. Webhook gates pods with `maroonedpods.io/group` label
+2. Controller creates VMI with Ignition (CloudInitConfigDrive + UserDataSecretRef)
+3. RHCOS VM boots → MCD firstboot rebases OS (~8 min)
+4. Node registers, CSRs auto-approved, node becomes Ready
+5. Controller removes scheduling gates
+6. Pods get scheduled to virtual node, containers start
+
+### Remaining issues:
+- Pods crash (can't reach 172.30.0.1:443) due to HyperShift NetworkPolicy + missing NAT — fix deployed, testing
+- `oc logs`/`oc exec` fail because node InternalIP (10.0.2.2) is not routable
 
 ### Manual fixes applied on live VM (need to be baked into Ignition):
 1. Created `/etc/kubernetes/node.env` with `KUBELET_NODE_NAME` and `KUBELET_NODE_IP`

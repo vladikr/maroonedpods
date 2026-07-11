@@ -1650,8 +1650,6 @@ func (ctrl *MaroonedPodsGateController) createGroupVMI(groupName string, namespa
 	vmiName := fmt.Sprintf("%s%s", util.GroupVMNamePrefix, sanitizeGroupName(groupName))
 	klog.Infof("Creating group VMI %s for group %s in namespace %s (pods in %s)", vmiName, groupName, vmNamespace, namespace)
 
-	ctrl.ensurePasstNAD(vmNamespace)
-
 	// Try to get Ignition config first (for OCP)
 	// Must be created well before the VMI so kubelet can sync the secret volume
 	ignitionSecretName, useIgnition := ctrl.ensureIgnitionSecret(vmNamespace)
@@ -1697,13 +1695,13 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 		util.GroupPoolStateLabel: util.GroupPoolStateCreating,
 	}
 
-	passtInterface := virtv1.Interface{
+	masqueradeInterface := virtv1.Interface{
 		Name: virtv1.DefaultPodNetwork().Name,
 		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
-			PasstBinding: &virtv1.InterfacePasstBinding{},
+			Masquerade: &virtv1.InterfaceMasquerade{},
 		},
 	}
-	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, passtInterface)
+	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, masqueradeInterface)
 	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
 
 	guestMemory := resource.MustParse(fmt.Sprintf("%dMi", memoryMi))
@@ -1821,10 +1819,10 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 	node.Labels[util.GroupNodeLabel] = groupName
 	// HPP CSI requires this label for PV node affinity
 	node.Labels["topology.hostpath.csi/node"] = nodeName
-	// Prevent ovnkube-node DaemonSet from running on virtual node
-	// The internal OVN stack (br-ex, br-int, OpenFlow rules) interferes with
-	// cross-node connectivity for bridge CNI pods inside the VM
-	node.Labels["network.operator.openshift.io/dpu-host"] = ""
+	// NOTE: Do NOT add dpu-host label here. The dpu-host ovnkube variant
+	// crashes on virtual nodes (needs DPU hardware). Instead, let the regular
+	// ovnkube-node manage OVN port bindings and use a br-ex flow guard
+	// inside the VM to clean problematic OpenFlow rules.
 
 	// Remove blocking taints and add group taint
 	taintsToRemove := map[string]bool{
