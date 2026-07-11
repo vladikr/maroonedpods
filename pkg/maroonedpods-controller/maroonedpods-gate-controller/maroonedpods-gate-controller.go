@@ -1695,6 +1695,11 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 		util.GroupPoolStateLabel: util.GroupPoolStateCreating,
 	}
 
+	if vmi.Annotations == nil {
+		vmi.Annotations = make(map[string]string)
+	}
+	vmi.Annotations["hooks.kubevirt.io/hookSidecars"] = `[{"args":["--version","v1alpha2"],"configMap":{"name":"mtu-hook","key":"onDefineDomain","hookPath":"/usr/bin/onDefineDomain"}}]`
+
 	masqueradeInterface := virtv1.Interface{
 		Name: virtv1.DefaultPodNetwork().Name,
 		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
