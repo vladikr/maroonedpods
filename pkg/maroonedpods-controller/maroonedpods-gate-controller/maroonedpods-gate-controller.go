@@ -1698,12 +1698,20 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 	if vmi.Annotations == nil {
 		vmi.Annotations = make(map[string]string)
 	}
-	vmi.Annotations["hooks.kubevirt.io/hookSidecars"] = `[{"args":["--version","v1alpha2"],"configMap":{"name":"mtu-hook","key":"onDefineDomain","hookPath":"/usr/bin/onDefineDomain"}}]`
+	vmi.Annotations["hooks.kubevirt.io/hookSidecars"] = `[{"image":"quay.io/vladikr/mtu-hook-sidecar:latest"}]`
 
 	masqueradeInterface := virtv1.Interface{
 		Name: virtv1.DefaultPodNetwork().Name,
 		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
 			Masquerade: &virtv1.InterfaceMasquerade{},
+		},
+		Ports: []virtv1.Port{
+			{Name: "kubelet", Port: 10250, Protocol: "TCP"},
+			{Name: "kapi", Port: 6443, Protocol: "TCP"},
+			{Name: "ignition", Port: 8443, Protocol: "TCP"},
+			{Name: "konnectivity", Port: 8091, Protocol: "TCP"},
+			{Name: "oauth", Port: 16443, Protocol: "TCP"},
+			{Name: "ssh", Port: 22, Protocol: "TCP"},
 		},
 	}
 	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, masqueradeInterface)
