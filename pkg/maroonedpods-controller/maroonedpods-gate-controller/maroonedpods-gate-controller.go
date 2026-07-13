@@ -1700,19 +1700,27 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 	}
 	vmi.Annotations["hooks.kubevirt.io/hookSidecars"] = `[{"image":"quay.io/vladikr/mtu-hook-sidecar:latest"}]`
 
-	bridgeInterface := virtv1.Interface{
+	masqueradeInterface := virtv1.Interface{
+		Name: virtv1.DefaultPodNetwork().Name,
+		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
+			Masquerade: &virtv1.InterfaceMasquerade{},
+		},
+	}
+	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, masqueradeInterface)
+	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
+
+	ovsInterface := virtv1.Interface{
 		Name: "ovs-net",
 		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
 			Bridge: &virtv1.InterfaceBridge{},
 		},
 	}
-	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeInterface)
+	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, ovsInterface)
 	vmi.Spec.Networks = append(vmi.Spec.Networks, virtv1.Network{
 		Name: "ovs-net",
 		NetworkSource: virtv1.NetworkSource{
 			Multus: &virtv1.MultusNetwork{
-				NetworkName: "ovs-br-int",
-				Default:     true,
+				NetworkName: namespace + "/ovs-br-int",
 			},
 		},
 	})
