@@ -1700,22 +1700,22 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 	}
 	vmi.Annotations["hooks.kubevirt.io/hookSidecars"] = `[{"image":"quay.io/vladikr/mtu-hook-sidecar:latest"}]`
 
-	masqueradeInterface := virtv1.Interface{
-		Name: virtv1.DefaultPodNetwork().Name,
+	bridgeInterface := virtv1.Interface{
+		Name: "ovs-net",
 		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
-			Masquerade: &virtv1.InterfaceMasquerade{},
-		},
-		Ports: []virtv1.Port{
-			{Name: "kubelet", Port: 10250, Protocol: "TCP"},
-			{Name: "kapi", Port: 6443, Protocol: "TCP"},
-			{Name: "ignition", Port: 8443, Protocol: "TCP"},
-			{Name: "konnectivity", Port: 8091, Protocol: "TCP"},
-			{Name: "oauth", Port: 16443, Protocol: "TCP"},
-			{Name: "ssh", Port: 22, Protocol: "TCP"},
+			Bridge: &virtv1.InterfaceBridge{},
 		},
 	}
-	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, masqueradeInterface)
-	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
+	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeInterface)
+	vmi.Spec.Networks = append(vmi.Spec.Networks, virtv1.Network{
+		Name: "ovs-net",
+		NetworkSource: virtv1.NetworkSource{
+			Multus: &virtv1.MultusNetwork{
+				NetworkName: "ovs-br-int",
+				Default:     true,
+			},
+		},
+	})
 
 	guestMemory := resource.MustParse(fmt.Sprintf("%dMi", memoryMi))
 	vmi.Spec.Domain.Memory = &virtv1.Memory{Guest: &guestMemory}
