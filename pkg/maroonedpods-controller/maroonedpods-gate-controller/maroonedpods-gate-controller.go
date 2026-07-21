@@ -10,6 +10,7 @@ import (
 	certv1 "k8s.io/api/certificates/v1"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1601,6 +1602,32 @@ func (ctrl *MaroonedPodsGateController) ensureMachineNetworkNAD(namespace string
 	}
 }
 
+func (ctrl *MaroonedPodsGateController) ensureVirtLauncherNetworkPolicy(namespace string) {
+	npName := "allow-virt-launcher-ingress"
+	np := &networkingv1.NetworkPolicy{
+		ObjectMeta: k8smetav1.ObjectMeta{
+			Name:      npName,
+			Namespace: namespace,
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: k8smetav1.LabelSelector{
+				MatchLabels: map[string]string{"kubevirt.io": "virt-launcher"},
+			},
+			Ingress:     []networkingv1.NetworkPolicyIngressRule{{}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+		},
+	}
+	_, err := ctrl.maroonedpodsCli.NetworkingV1().NetworkPolicies(namespace).Create(
+		context.Background(), np, k8smetav1.CreateOptions{})
+	if err != nil {
+		if !errors.IsAlreadyExists(err) {
+			klog.Warningf("Failed to create virt-launcher NetworkPolicy in %s: %v", namespace, err)
+		}
+	} else {
+		klog.Infof("Created virt-launcher NetworkPolicy in %s", namespace)
+	}
+}
+
 func (ctrl *MaroonedPodsGateController) ensureVMNamespace(podNamespace string) (string, error) {
 	vmNs := podNamespace + "-vm"
 	_, err := ctrl.maroonedpodsCli.CoreV1().Namespaces().Get(context.Background(), vmNs, k8smetav1.GetOptions{})
@@ -1694,19 +1721,17 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 		util.GroupLabel:          groupName,
 		util.GroupPoolStateLabel: util.GroupPoolStateCreating,
 	}
-
-	if vmi.Annotations == nil {
-		vmi.Annotations = make(map[string]string)
+	vmi.Annotations = map[string]string{
+		"kubevirt.io/allow-pod-bridge-network-live-migration": "",
 	}
-	vmi.Annotations["hooks.kubevirt.io/hookSidecars"] = `[{"image":"quay.io/vladikr/mtu-hook-sidecar:latest"}]`
 
-	masqueradeInterface := virtv1.Interface{
+	bridgeInterface := virtv1.Interface{
 		Name: virtv1.DefaultPodNetwork().Name,
 		InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
-			Masquerade: &virtv1.InterfaceMasquerade{},
+			Bridge: &virtv1.InterfaceBridge{},
 		},
 	}
-	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, masqueradeInterface)
+	vmi.Spec.Domain.Devices.Interfaces = append(vmi.Spec.Domain.Devices.Interfaces, bridgeInterface)
 	vmi.Spec.Networks = append(vmi.Spec.Networks, *virtv1.DefaultPodNetwork())
 
 	ovsInterface := virtv1.Interface{
@@ -1799,7 +1824,7 @@ kubeadm join --config /tmp/kubeadm-join-config.conf --ignore-preflight-errors=al
 			Name: "datadisk",
 			VolumeSource: virtv1.VolumeSource{
 				EmptyDisk: &virtv1.EmptyDiskSource{
-					Capacity: resource.MustParse("50Gi"),
+					Capacity: resource.MustParse("100Gi"),
 				},
 			},
 		})
@@ -1882,8 +1907,28 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 		return fmt.Errorf("failed to label/taint node %s for group %s: %v", nodeName, groupName, err)
 	}
 
+	// Fix MCD cordon: set currentConfig = desiredConfig so MCD doesn't keep cordoning the node
+	desiredConfig, ok := node.Annotations["machineconfiguration.openshift.io/desiredConfig"]
+	if ok && desiredConfig != "" {
+		patchData := fmt.Sprintf(`{"metadata":{"annotations":{`+
+			`"machineconfiguration.openshift.io/currentConfig":"%s",`+
+			`"machineconfiguration.openshift.io/state":"Done",`+
+			`"machineconfiguration.openshift.io/desiredDrain":"uncordon-%s"`+
+			`}},"spec":{"unschedulable":false}}`, desiredConfig, desiredConfig)
+		_, patchErr := ctrl.maroonedpodsCli.CoreV1().Nodes().Patch(
+			context.Background(), nodeName, k8stypes.MergePatchType,
+			[]byte(patchData), k8smetav1.PatchOptions{})
+		if patchErr != nil {
+			klog.Warningf("Failed to fix MCD annotations on node %s: %v", nodeName, patchErr)
+		} else {
+			klog.Infof("Fixed MCD annotations on node %s (currentConfig=%s)", nodeName, desiredConfig)
+		}
+	}
+
+	// Ensure NetworkPolicy allows ingress to virt-launcher pod from all namespaces
+	ctrl.ensureVirtLauncherNetworkPolicy(groupName)
+
 	// Clean up ghost pods from previous VMI boots (ContainerStatusUnknown)
-	// Ghost pods are in the tenant namespace (groupName), not the VM namespace
 	ctrl.cleanupGhostPods(nodeName, groupName)
 
 	// Patch EndpointSlices for Route/LB-exposed services so external traffic

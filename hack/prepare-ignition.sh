@@ -308,8 +308,10 @@ json.dump(eps, open('/tmp/eps.json','w'))
 import json, socket
 svcs = json.load(open('/tmp/svcs.json'))
 eps = json.load(open('/tmp/eps.json'))
+import subprocess
 try:
-    vm_ip = socket.gethostbyname(socket.gethostname())
+    out = subprocess.check_output(['ip','-4','-o','addr','show','enp1s0'], text=True)
+    vm_ip = out.split('inet ')[1].split('/')[0]
     vm_subnet = '.'.join(vm_ip.split('.')[:2])
 except:
     vm_subnet = ''
@@ -433,7 +435,41 @@ WantedBy=multi-user.target
 ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'data-disk-setup.service']
 ign['systemd']['units'].append(data_disk_unit)
 
-# 4f. Add debug-boot service (sets core password for console access)
+# 4f. Add crio-storage-setup service (symlinks container storage to data disk)
+print("Adding crio-storage-setup.service...")
+crio_storage_unit = {
+    "name": "crio-storage-setup.service",
+    "enabled": True,
+    "contents": """[Unit]
+Description=Redirect CRI-O container storage to data disk
+After=data-disk-setup.service
+Before=crio.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/bin/bash -c '\
+  DATA=/var/hpp-csi-local-basic; \
+  STORE=/var/lib/containers/storage; \
+  if [ ! -d $$DATA ]; then echo "Data disk not mounted"; exit 0; fi; \
+  if [ -L $$STORE ]; then echo "Already symlinked"; exit 0; fi; \
+  mkdir -p $$DATA/containers-storage; \
+  if [ -d $$STORE ]; then rm -rf $$STORE; fi; \
+  ln -sf $$DATA/containers-storage $$STORE; \
+  semanage fcontext -a -t container_file_t "$$DATA/containers-storage(/.*)?" 2>/dev/null || true; \
+  restorecon -R $$DATA/containers-storage; \
+  semanage fcontext -a -t container_file_t "$$DATA/csi(/.*)?" 2>/dev/null || true; \
+  restorecon -R $$DATA; \
+  echo "CRI-O storage redirected to $$DATA/containers-storage"'
+
+[Install]
+WantedBy=multi-user.target
+"""
+}
+ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'crio-storage-setup.service']
+ign['systemd']['units'].append(crio_storage_unit)
+
+# 4g. Add debug-boot service (sets core password for console access)
 print("Adding debug-boot service...")
 debug_script = r"""#!/bin/bash
 echo 'core:debug123' | chpasswd

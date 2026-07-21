@@ -116,20 +116,8 @@ func (v Handler) mutateGroupPod(pod *v1.Pod, groupName string) (*admissionv1.Adm
 		return nil, err
 	}
 
-	finalizers := pod.Finalizers
-	if finalizers == nil {
-		finalizers = []string{}
-	}
-	finalizers = append(finalizers, util.MaroonedPodsFinalizer)
-
-	finalizersBytes, err := json.Marshal(finalizers)
-	if err != nil {
-		return nil, err
-	}
-
 	var patchOps []string
 
-	patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/metadata/finalizers", "value": %s}`, string(finalizersBytes)))
 	patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/spec/schedulingGates", "value": %s}`, string(schedulingGatesBytes)))
 	patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/spec/tolerations/-", "value": {"key": "%s", "operator": "Equal", "value": "%s", "effect": "NoSchedule"}}`, util.GroupLabel, groupName))
 	patchOps = append(patchOps, fmt.Sprintf(`{"op": "add", "path": "/spec/nodeSelector", "value": {"%s": "%s"}}`, util.GroupNodeLabel, groupName))
