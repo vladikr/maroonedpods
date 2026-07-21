@@ -1603,6 +1603,28 @@ func (ctrl *MaroonedPodsGateController) ensureMachineNetworkNAD(namespace string
 	}
 }
 
+func (ctrl *MaroonedPodsGateController) ensureOvsBrIntNAD(namespace string) {
+	nadName := "ovs-br-int"
+	_, err := ctrl.maroonedpodsCli.CoreV1().RESTClient().Get().
+		AbsPath("/apis/k8s.cni.cncf.io/v1/namespaces/" + namespace + "/network-attachment-definitions/" + nadName).
+		DoRaw(context.Background())
+	if err == nil {
+		return
+	}
+
+	nadJSON := fmt.Sprintf(`{"apiVersion":"k8s.cni.cncf.io/v1","kind":"NetworkAttachmentDefinition","metadata":{"name":"%s","namespace":"%s"},"spec":{"config":"{\"cniVersion\":\"1.0.0\",\"name\":\"%s\",\"type\":\"ovs\",\"bridge\":\"br-int\"}"}}`, nadName, namespace, nadName)
+	_, err = ctrl.maroonedpodsCli.CoreV1().RESTClient().Post().
+		AbsPath("/apis/k8s.cni.cncf.io/v1/namespaces/" + namespace + "/network-attachment-definitions").
+		Body([]byte(nadJSON)).
+		SetHeader("Content-Type", "application/json").
+		DoRaw(context.Background())
+	if err != nil {
+		klog.Warningf("Failed to create ovs-br-int NAD in %s: %v", namespace, err)
+	} else {
+		klog.Infof("Created ovs-br-int NAD in namespace %s", namespace)
+	}
+}
+
 func (ctrl *MaroonedPodsGateController) ensureVirtLauncherNetworkPolicy(namespace string) {
 	npName := "allow-virt-launcher-ingress"
 	np := &networkingv1.NetworkPolicy{
@@ -1677,6 +1699,9 @@ func (ctrl *MaroonedPodsGateController) createGroupVMI(groupName string, namespa
 
 	vmiName := fmt.Sprintf("%s%s", util.GroupVMNamePrefix, sanitizeGroupName(groupName))
 	klog.Infof("Creating group VMI %s for group %s in namespace %s (pods in %s)", vmiName, groupName, vmNamespace, namespace)
+
+	// Ensure ovs-br-int NAD exists for the secondary OVS interface
+	ctrl.ensureOvsBrIntNAD(vmNamespace)
 
 	// Try to get Ignition config first (for OCP)
 	// Must be created well before the VMI so kubelet can sync the secret volume
