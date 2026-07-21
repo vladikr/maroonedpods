@@ -11,6 +11,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1928,6 +1929,12 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 	// Ensure NetworkPolicy allows ingress to virt-launcher pod from all namespaces
 	ctrl.ensureVirtLauncherNetworkPolicy(groupName)
 
+	// Ensure the default IngressController admits HyperShift Routes
+	ctrl.ensureIngressControllerRouteSelector()
+
+	// Ensure node-pod-reader RBAC for auto-proxy kubectl access inside VM
+	ctrl.ensureNodePodReaderRBAC()
+
 	// Clean up ghost pods from previous VMI boots (ContainerStatusUnknown)
 	ctrl.cleanupGhostPods(nodeName, groupName)
 
@@ -1972,10 +1979,11 @@ func (ctrl *MaroonedPodsGateController) ensureEndpointSlices(namespace, nodeName
 	}
 
 	endpoints := []svcEndpoint{
-		{serviceName: "ignition-server-proxy", port: 8443, portName: "https", proxyPort: 8443},
+		{serviceName: "ignition-server-proxy", port: 9443, portName: "https", proxyPort: 9443},
 		{serviceName: "konnectivity-server", port: 8091, portName: "", proxyPort: 8091},
 		{serviceName: "oauth-openshift", port: 6443, portName: "", proxyPort: 16443},
 		{serviceName: "kube-apiserver", port: 6443, portName: "", proxyPort: 6443},
+		{serviceName: "router", port: 8443, portName: "https", proxyPort: 8443},
 	}
 
 	managedBy := "maroonedpods-controller"
@@ -1995,6 +2003,9 @@ func (ctrl *MaroonedPodsGateController) ensureEndpointSlices(namespace, nodeName
 				needsUpdate = true
 			}
 			if len(existing.Ports) == 0 || *existing.Ports[0].Port != ep.proxyPort {
+				needsUpdate = true
+			}
+			if len(existing.Ports) > 0 && existing.Ports[0].Name != nil && *existing.Ports[0].Name != ep.portName {
 				needsUpdate = true
 			}
 			if !needsUpdate {
@@ -2066,6 +2077,75 @@ func (ctrl *MaroonedPodsGateController) ensureEndpointSlices(namespace, nodeName
 		}
 	}
 
+}
+
+func (ctrl *MaroonedPodsGateController) ensureIngressControllerRouteSelector() {
+	patchData := []byte(`[{"op":"remove","path":"/spec/routeSelector"}]`)
+	_, err := ctrl.maroonedpodsCli.CoreV1().RESTClient().Patch(k8stypes.JSONPatchType).
+		AbsPath("/apis/operator.openshift.io/v1/namespaces/openshift-ingress-operator/ingresscontrollers/default").
+		Body(patchData).
+		DoRaw(context.Background())
+	if err != nil {
+		if !errors.IsNotFound(err) && !strings.Contains(err.Error(), "doesn't exist") {
+			klog.V(3).Infof("ensureIngressControllerRouteSelector: %v (may already be removed)", err)
+		}
+	} else {
+		klog.Infof("Removed routeSelector from default IngressController")
+	}
+}
+
+func (ctrl *MaroonedPodsGateController) ensureNodePodReaderRBAC() {
+	roleName := "node-pod-reader"
+	role := &rbacv1.ClusterRole{
+		ObjectMeta: k8smetav1.ObjectMeta{Name: roleName},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+			Verbs:     []string{"get", "list"},
+		}},
+	}
+	_, err := ctrl.maroonedpodsCli.RbacV1().ClusterRoles().Create(context.Background(), role, k8smetav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		klog.Warningf("ensureNodePodReaderRBAC: failed to create ClusterRole: %v", err)
+	}
+
+	binding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: k8smetav1.ObjectMeta{Name: roleName},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     roleName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:     "Group",
+			Name:     "system:nodes",
+			APIGroup: "rbac.authorization.k8s.io",
+		}},
+	}
+	_, err = ctrl.maroonedpodsCli.RbacV1().ClusterRoleBindings().Create(context.Background(), binding, k8smetav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		klog.Warningf("ensureNodePodReaderRBAC: failed to create ClusterRoleBinding: %v", err)
+	}
+}
+
+func (ctrl *MaroonedPodsGateController) cleanupAutoEndpointSlices(namespace string) {
+	routedServices := []string{"kube-apiserver", "ignition-server-proxy", "konnectivity-server", "oauth-openshift", "router"}
+	for _, svcName := range routedServices {
+		slices, err := ctrl.maroonedpodsCli.DiscoveryV1().EndpointSlices(namespace).List(
+			context.Background(), k8smetav1.ListOptions{
+				LabelSelector: fmt.Sprintf("kubernetes.io/service-name=%s,endpointslice.kubernetes.io/managed-by=endpointslice-controller.k8s.io", svcName),
+			})
+		if err != nil {
+			continue
+		}
+		for _, es := range slices.Items {
+			err = ctrl.maroonedpodsCli.DiscoveryV1().EndpointSlices(namespace).Delete(
+				context.Background(), es.Name, k8smetav1.DeleteOptions{})
+			if err != nil && !errors.IsNotFound(err) {
+				klog.V(3).Infof("cleanupAutoEndpointSlices: deleted %s/%s", namespace, es.Name)
+			}
+		}
+	}
 }
 
 func (ctrl *MaroonedPodsGateController) cleanupGhostPods(nodeName string, namespace string) {
@@ -2444,5 +2524,6 @@ func (ctrl *MaroonedPodsGateController) reconcileEndpointSlices() {
 			continue
 		}
 		ctrl.ensureEndpointSlices(groupName, vmi.Name, vmi)
+		ctrl.cleanupAutoEndpointSlices(groupName)
 	}
 }

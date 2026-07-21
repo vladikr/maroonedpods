@@ -497,6 +497,94 @@ WantedBy=multi-user.target
 ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'debug-boot.service']
 ign['systemd']['units'].append(debug_boot_unit)
 
+# 4h. Add auto-proxy service (discovers and proxies HyperShift bridge pod services)
+print("Adding auto-proxy service...")
+auto_proxy_script = r"""#!/bin/bash
+LOG="/var/log/auto-proxy.log"
+KC="/var/lib/kubelet/kubeconfig"
+TENANT_NS=$(hostname | sed 's/maroonedpods-group-//')
+
+echo "$(date): auto-proxy starting, tenant=$TENANT_NS" >> "$LOG"
+
+while [ ! -f "$KC" ]; do
+    echo "$(date): waiting for $KC..." >> "$LOG"
+    sleep 5
+done
+
+echo "$(date): kubeconfig found, starting proxy loop" >> "$LOG"
+
+while true; do
+    # --- kapi: app=kube-apiserver, listen 6443 -> pod 6443 ---
+    KAPI_IP=$(kubectl --kubeconfig "$KC" get pod -n "$TENANT_NS" -l app=kube-apiserver -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    KAPI_CACHED=$(cat /tmp/kapi_ip 2>/dev/null)
+    if [ -n "$KAPI_IP" ] && [ "$KAPI_IP" != "$KAPI_CACHED" ]; then
+        echo "$(date): kapi IP changed: $KAPI_CACHED -> $KAPI_IP" >> "$LOG"
+        pkill -f 'socat TCP4-LISTEN:6443' 2>/dev/null || true
+        setsid socat TCP4-LISTEN:6443,fork,reuseaddr TCP4:${KAPI_IP}:6443 &
+        echo "$KAPI_IP" > /tmp/kapi_ip
+        echo "$(date): kapi proxy started on :6443 -> $KAPI_IP:6443" >> "$LOG"
+    fi
+    if [ -n "$KAPI_IP" ] && ! pgrep -f 'socat TCP4-LISTEN:6443' > /dev/null 2>&1; then
+        setsid socat TCP4-LISTEN:6443,fork,reuseaddr TCP4:${KAPI_IP}:6443 &
+        echo "$(date): kapi proxy restarted on :6443 -> $KAPI_IP:6443" >> "$LOG"
+    fi
+
+    # --- ignition-server-proxy: app=ignition-server-proxy, listen 9443 -> pod 8443 ---
+    IGN_IP=$(kubectl --kubeconfig "$KC" get pod -n "$TENANT_NS" -l app=ignition-server-proxy -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    IGN_CACHED=$(cat /tmp/ignition-server-proxy_ip 2>/dev/null)
+    if [ -n "$IGN_IP" ] && [ "$IGN_IP" != "$IGN_CACHED" ]; then
+        echo "$(date): ignition-server-proxy IP changed: $IGN_CACHED -> $IGN_IP" >> "$LOG"
+        pkill -f 'socat TCP4-LISTEN:9443' 2>/dev/null || true
+        setsid socat TCP4-LISTEN:9443,fork,reuseaddr TCP4:${IGN_IP}:8443 &
+        echo "$IGN_IP" > /tmp/ignition-server-proxy_ip
+        echo "$(date): ignition-server-proxy proxy started on :9443 -> $IGN_IP:8443" >> "$LOG"
+    fi
+    if [ -n "$IGN_IP" ] && ! pgrep -f 'socat TCP4-LISTEN:9443' > /dev/null 2>&1; then
+        setsid socat TCP4-LISTEN:9443,fork,reuseaddr TCP4:${IGN_IP}:8443 &
+        echo "$(date): ignition-server-proxy proxy restarted on :9443 -> $IGN_IP:8443" >> "$LOG"
+    fi
+
+    # --- router: app=private-router, listen 8443 -> pod 8443 ---
+    ROUTER_IP=$(kubectl --kubeconfig "$KC" get pod -n "$TENANT_NS" -l app=private-router -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    ROUTER_CACHED=$(cat /tmp/router_ip 2>/dev/null)
+    if [ -n "$ROUTER_IP" ] && [ "$ROUTER_IP" != "$ROUTER_CACHED" ]; then
+        echo "$(date): router IP changed: $ROUTER_CACHED -> $ROUTER_IP" >> "$LOG"
+        pkill -f 'socat TCP4-LISTEN:8443' 2>/dev/null || true
+        setsid socat TCP4-LISTEN:8443,fork,reuseaddr TCP4:${ROUTER_IP}:8443 &
+        echo "$ROUTER_IP" > /tmp/router_ip
+        echo "$(date): router proxy started on :8443 -> $ROUTER_IP:8443" >> "$LOG"
+    fi
+    if [ -n "$ROUTER_IP" ] && ! pgrep -f 'socat TCP4-LISTEN:8443' > /dev/null 2>&1; then
+        setsid socat TCP4-LISTEN:8443,fork,reuseaddr TCP4:${ROUTER_IP}:8443 &
+        echo "$(date): router proxy restarted on :8443 -> $ROUTER_IP:8443" >> "$LOG"
+    fi
+
+    sleep 10
+done
+"""
+add_or_replace_file('/usr/local/bin/auto-proxy.sh', auto_proxy_script, 0o755)
+
+auto_proxy_unit = {
+    "name": "auto-proxy.service",
+    "enabled": True,
+    "contents": """[Unit]
+Description=Auto-proxy for HyperShift bridge pod services
+After=kubelet.service
+Wants=kubelet.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/local/bin/auto-proxy.sh
+
+[Install]
+WantedBy=multi-user.target
+"""
+}
+ign['systemd']['units'] = [u for u in ign['systemd']['units'] if u.get('name') != 'auto-proxy.service']
+ign['systemd']['units'].append(auto_proxy_unit)
+
 # 5. Disable/mask OVS units
 print("Disabling OVS/OVN units...")
 ovs_units = [

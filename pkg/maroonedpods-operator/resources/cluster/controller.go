@@ -67,6 +67,7 @@ func getControllerClusterPolicyRules() []rbacv1.PolicyRule {
 				"watch",
 				"get",
                 "patch",
+				"delete",
 			},
 		},
 		{
@@ -322,6 +323,40 @@ func getControllerClusterPolicyRules() []rbacv1.PolicyRule {
 			},
 			Verbs: []string{
 				"get", "list", "watch", "create",
+			},
+		},
+		{
+			APIGroups: []string{
+				"networking.k8s.io",
+			},
+			Resources: []string{
+				"networkpolicies",
+			},
+			Verbs: []string{
+				"get", "create", "update",
+			},
+		},
+		{
+			APIGroups: []string{
+				"rbac.authorization.k8s.io",
+			},
+			Resources: []string{
+				"clusterroles",
+				"clusterrolebindings",
+			},
+			Verbs: []string{
+				"get", "create", "update",
+			},
+		},
+		{
+			APIGroups: []string{
+				"operator.openshift.io",
+			},
+			Resources: []string{
+				"ingresscontrollers",
+			},
+			Verbs: []string{
+				"get", "patch",
 			},
 		},
 	}
