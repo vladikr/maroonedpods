@@ -774,9 +774,21 @@ if 'config' in encapsulated_mc['spec']:
             'mask': True
         })
 
-# Add the encapsulated MC as a file
-encapsulated_mc_json = json.dumps(encapsulated_mc)
-add_or_replace_file('/etc/ignition-machine-config-encapsulated.json', encapsulated_mc_json, 0o600)
+# Add the encapsulated MC as a gzip-compressed file (saves ~300KB in the ignition)
+import gzip as gzip_mod
+encapsulated_mc_json = json.dumps(encapsulated_mc).encode()
+compressed = gzip_mod.compress(encapsulated_mc_json)
+compressed_b64 = base64.standard_b64encode(compressed).decode()
+ign['storage']['files'] = [f for f in ign['storage']['files'] if f.get('path') != '/etc/ignition-machine-config-encapsulated.json']
+ign['storage']['files'].append({
+    'path': '/etc/ignition-machine-config-encapsulated.json',
+    'mode': 0o600,
+    'contents': {
+        'compression': 'gzip',
+        'source': f'data:;base64,{compressed_b64}'
+    }
+})
+print(f"  Encapsulated MC: {len(encapsulated_mc_json)} bytes -> {len(compressed)} bytes (gzip)")
 
 # Write output
 print(f"Writing Ignition config to {output_path}...")
