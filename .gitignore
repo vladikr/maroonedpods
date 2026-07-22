@@ -9,3 +9,7 @@ bin/
 _out/*
 manifests/generated/*
 .coverprofile
+maroonedpods_controller
+maroonedpods_operator
+maroonedpods_server
+images/node/output-ocp/qcow2/
