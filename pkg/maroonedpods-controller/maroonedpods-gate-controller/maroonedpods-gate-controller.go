@@ -1377,8 +1377,11 @@ func (ctrl *MaroonedPodsGateController) executeGroup(pod *v1.Pod, groupName stri
 			klog.Errorf("Failed to create group VMI for %s: %v", groupName, err)
 			return err, BackOff
 		}
+		ctrl.ensureVirtLauncherNetworkPolicy(pod.Namespace)
 		return fmt.Errorf("waiting for group %s VMI to start", groupName), BackOff
 	}
+
+	ctrl.ensureVirtLauncherNetworkPolicy(pod.Namespace)
 
 	if groupVMI.Status.Phase != virtv1.Running {
 		klog.V(2).Infof("Group %s VMI %s not yet Running (phase: %s)", groupName, groupVMI.Name, string(groupVMI.Status.Phase))
