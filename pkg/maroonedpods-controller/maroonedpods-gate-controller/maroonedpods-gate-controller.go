@@ -1652,6 +1652,25 @@ func (ctrl *MaroonedPodsGateController) ensureVirtLauncherNetworkPolicy(namespac
 	} else {
 		klog.Infof("Created virt-launcher NetworkPolicy in %s", namespace)
 	}
+
+	egressNP := &networkingv1.NetworkPolicy{
+		ObjectMeta: k8smetav1.ObjectMeta{
+			Name:      "allow-virt-launcher-egress",
+			Namespace: namespace,
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: k8smetav1.LabelSelector{
+				MatchLabels: map[string]string{"kubevirt.io": "virt-launcher"},
+			},
+			Egress:      []networkingv1.NetworkPolicyEgressRule{{}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+		},
+	}
+	_, err = ctrl.maroonedpodsCli.NetworkingV1().NetworkPolicies(namespace).Create(
+		context.Background(), egressNP, k8smetav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		klog.Warningf("Failed to create virt-launcher egress NetworkPolicy in %s: %v", namespace, err)
+	}
 }
 
 func (ctrl *MaroonedPodsGateController) ensureVMNamespace(podNamespace string) (string, error) {
@@ -1981,21 +2000,26 @@ func (ctrl *MaroonedPodsGateController) markGroupVMIReady(vmi *virtv1.VirtualMac
 // the management cluster's OVN network. A socat reverse proxy inside the VM
 // forwards from the endpoint IP port to the bridge pod.
 func (ctrl *MaroonedPodsGateController) ensureEndpointSlices(namespace, nodeName string, vmi *virtv1.VirtualMachineInstance) {
-	nodeObj, exists, err := ctrl.nodeInformer.GetStore().GetByKey(nodeName)
-	if err != nil || !exists {
-		klog.Warningf("ensureEndpointSlices: node %s not found", nodeName)
-		return
-	}
-	node := nodeObj.(*v1.Node)
 	nodeIP := ""
-	for _, addr := range node.Status.Addresses {
-		if addr.Type == v1.NodeInternalIP {
-			nodeIP = addr.Address
-			break
+	if vmi != nil && len(vmi.Status.Interfaces) > 0 {
+		nodeIP = vmi.Status.Interfaces[0].IP
+	}
+	if nodeIP == "" {
+		nodeObj, exists, err := ctrl.nodeInformer.GetStore().GetByKey(nodeName)
+		if err != nil || !exists {
+			klog.Warningf("ensureEndpointSlices: node %s not found", nodeName)
+			return
+		}
+		node := nodeObj.(*v1.Node)
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == v1.NodeInternalIP {
+				nodeIP = addr.Address
+				break
+			}
 		}
 	}
 	if nodeIP == "" {
-		klog.Warningf("ensureEndpointSlices: no InternalIP for node %s", nodeName)
+		klog.Warningf("ensureEndpointSlices: no IP for node %s / VMI %s", nodeName, vmi.Name)
 		return
 	}
 
